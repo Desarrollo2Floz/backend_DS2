@@ -1,30 +1,31 @@
 # pyrefly: ignore [missing-import]
-from django.db import models
+from django.contrib.auth.models import AbstractUser
 # pyrefly: ignore [missing-import]
+from django.db import models
 from datetime import date, timedelta
-class User(models.Model):
+import uuid
+
+
+class User(AbstractUser):
     """
-    Modelo de usuario personalizado para FLOZ en Railway.
-    Hereda toda la seguridad nativa de Django (RF-04) y mantiene la lógica de rachas.
+    Modelo de usuario personalizado para FLOZ.
+    Extiende AbstractUser (hereda username, password, email, is_active, etc.)
+    y agrega los campos de perfil específicos de la app.
     """
-    user_id = models.BigAutoField(primary_key=True)
-    uuid_user = models.UUIDField(unique=True)
-    name = models.TextField()
-    last_name = models.TextField()
+    # Campo heredado de Supabase por compatibilidad
+    uuid_user = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    # AbstractUser ya provee: id (PK), username, password, email,
+    # first_name, last_name, is_active
     streak_current = models.IntegerField(default=0)
     streak_last_day = models.DateField(null=True, blank=True)
     streak_best = models.IntegerField(default=0)
 
-    class Meta: 
+    class Meta:
         db_table = 'user'
 
     def __str__(self):
-        return f"{self.name} {self.last_name}"
-    
-    @property
-    def is_authenticated(self):
-        return True
-    
+        return f"{self.username} ({self.first_name} {self.last_name})"
+
     def update_streak(self):
         """
         Actualiza la racha del usuario basado en su última actividad.
@@ -32,8 +33,6 @@ class User(models.Model):
         - Si completó algo AYER: incrementa racha
         - Si streak_last_day es null o pasó más de 1 día: inicia/resetea a 1
         """
-        from datetime import date, timedelta
-
         today = date.today()
 
         if self.streak_last_day == today:
@@ -55,7 +54,7 @@ class User(models.Model):
 
         self.streak_last_day = today
         self.save()
-        
+
 
 class DailyCapacity(models.Model):
     """
@@ -69,4 +68,4 @@ class DailyCapacity(models.Model):
         db_table = 'daily_capacity'
 
     def __str__(self):
-        return f"{self.user.name} - Limite: {self.daily_limit_hours}h"
+        return f"{self.user.username} - Limite: {self.daily_limit_hours}h"
