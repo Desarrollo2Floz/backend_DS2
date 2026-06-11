@@ -1,66 +1,21 @@
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema
-import jwt
-import os
-from jwt import PyJWKClient
+from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import User
-from .serializers import UserSerializer
-from .authentication import SupabaseJWTAuthentication
+from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
 
-@extend_schema(methods=['POST'], request=UserSerializer, responses=UserSerializer)
+
+class LoginView(TokenObtainPairView):
+    serializer_class = LoginSerializer
+
+@extend_schema(methods=['POST'], request=RegisterSerializer, responses=UserSerializer)
 @api_view(['POST'])
-@authentication_classes([SupabaseJWTAuthentication])
 @permission_classes([AllowAny])
 def register(request):
-    """ 
-    Crea el perfil del usuario en public.user despues de que Supabase Auth 
-    confimo el email.
-    El Jwt ya viene verificado, extraemos el uuid del token
-    """
-
-    #verificamos manualmente el jwt para obtener el uuid
-    auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
-        return Response({
-            'status': 'error',
-            'message': 'Token requerido.',
-        }, status=status.HTTP_401_UNAUTHORIZED)
-    
-    token = auth_header.split(' ')[1]
-    supabase_url = os.environ.get('SUPABASE_URL')
-    jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
-
-    try:
-        jwks_client = PyJWKClient(jwks_url)
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=['ES256'],
-            audience='authenticated',
-            options={'verify_iat': False}
-        )
-    except Exception as e:
-        return Response({
-            'status': 'error',
-            'message': f'Token inválido: {str(e)}',
-        }, status=status.HTTP_401_UNAUTHORIZED)
-    
-    uuid_user = payload.get('sub')
-
-    # Verificamos si el usuario ya existe
-    if User.objects.filter(uuid_user=uuid_user).exists():
-        return Response({
-            'status': 'error',
-            'message': 'El usuario ya está registrado.',
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Creamos el perfil en public.user
-    serializer = UserSerializer(data={**request.data, 'uuid_user': uuid_user})
+    serializer = RegisterSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.save()
         return Response({
@@ -74,3 +29,13 @@ def register(request):
         'message': 'Error de validación',
         'errors': serializer.errors,
     }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(methods=['GET'], responses=UserSerializer)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def me(request):
+    return Response({
+        'status': 'success',
+        'data': UserSerializer(request.user).data,
+    }, status=status.HTTP_200_OK)

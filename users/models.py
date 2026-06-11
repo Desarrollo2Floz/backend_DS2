@@ -12,7 +12,7 @@ class User(AbstractUser):
     Extiende AbstractUser (hereda username, password, email, is_active, etc.)
     y agrega los campos de perfil específicos de la app.
     """
-    # Campo heredado de Supabase por compatibilidad
+    # Identificador alterno para integraciones externas o migraciones futuras
     uuid_user = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     # AbstractUser ya provee: id (PK), username, password, email,
     # first_name, last_name, is_active
