@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db import transaction
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 from datetime import date
 from .models import Activity, Subtask
 from .serializers import ActivitySerializer, SubtaskSerializer
@@ -178,7 +178,14 @@ def subtask_detail(request, pk):
         }, status=status.HTTP_200_OK)
 
 
-@extend_schema(methods=['GET'], responses=SubtaskSerializer(many=True))
+@extend_schema(
+    methods=['GET'],
+    responses=SubtaskSerializer(many=True),
+    parameters=[
+        OpenApiParameter(name='course', description='Filter by course name', required=False, type=str),
+        OpenApiParameter(name='status', description='Filter by subtask status', required=False, type=str),
+    ]
+)
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def today_subtasks(request):
@@ -190,7 +197,18 @@ def today_subtasks(request):
     subtasks = Subtask.objects.filter(
         activity__user_id=request.user.user_id,
         target_date__isnull=False
-    ).exclude(status='done')
+    )
+    
+    course_param = request.GET.get('course')
+    status_param = request.GET.get('status')
+    
+    if course_param:
+        subtasks = subtasks.filter(activity__course__icontains=course_param)
+        
+    if status_param:
+        subtasks = subtasks.filter(status=status_param)
+    else:
+        subtasks = subtasks.exclude(status='done')
     
     overdue = []
     today_list = []
