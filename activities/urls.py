@@ -11,4 +11,6 @@ urlpatterns = [
     path('activities/<uuid:activity_id>/subtasks/', views.subtask_create, name='subtask-create'),
     # Rutas para editar y eliminar subtareas (US-03)
     path('subtasks/<int:pk>/', views.subtask_detail, name='subtask-detail'),
+    # Ruta para la vista "Hoy" (US-04)
+    path('today/', views.today_subtasks, name='today-subtasks'),
 ]

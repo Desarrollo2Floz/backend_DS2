@@ -175,4 +175,50 @@ def subtask_detail(request, pk):
         return Response({
             'status': 'success',
             'message': 'Subtarea eliminada exitosamente',
-        }, status=status.HTTP_200_OK)
+        }, status=status.HTTP_200_OK)
+
+
+@extend_schema(methods=['GET'], responses=SubtaskSerializer(many=True))
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def today_subtasks(request):
+    """
+    GET /api/today/ — Obtiene las prioridades agrupadas por Vencidas, Para hoy y Próximas (US-04).
+    """
+    today = date.today()
+    
+    subtasks = Subtask.objects.filter(
+        activity__user_id=request.user.user_id,
+        target_date__isnull=False
+    ).exclude(status='done')
+    
+    overdue = []
+    today_list = []
+    upcoming = []
+    
+    for subtask in subtasks:
+        if subtask.target_date < today:
+            overdue.append(subtask)
+        elif subtask.target_date == today:
+            today_list.append(subtask)
+        else:
+            upcoming.append(subtask)
+            
+    # Ordenamiento
+    # Vencidas: más antiguas primero, empate menor esfuerzo
+    overdue.sort(key=lambda x: (x.target_date, x.estimated_hours or 0))
+    # Para hoy: empate menor esfuerzo
+    today_list.sort(key=lambda x: x.estimated_hours or 0)
+    # Próximas: más cercanas primero, empate menor esfuerzo
+    upcoming.sort(key=lambda x: (x.target_date, x.estimated_hours or 0))
+    
+    return Response({
+        'status': 'success',
+        'data': {
+            'overdue': SubtaskSerializer(overdue, many=True).data,
+            'today': SubtaskSerializer(today_list, many=True).data,
+            'upcoming': SubtaskSerializer(upcoming, many=True).data,
+            'rule': 'Orden: Vencidas (más antiguas), Hoy, Próximas (más cercanas). Empate: menor esfuerzo.'
+        }
+    }, status=status.HTTP_200_OK)
+
