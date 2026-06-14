@@ -92,3 +92,87 @@ def subtask_create(request, activity_id):
         'message': 'Error de validación',
         'errors': serializer.errors,
     }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(methods=['PUT', 'PATCH'], request=ActivitySerializer, responses=ActivitySerializer)
+@extend_schema(methods=['DELETE'], responses={204: None})
+@api_view(['PUT', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def activity_detail(request, pk):
+    """
+    PUT/PATCH /api/activities/<int:pk>/ — Edita una actividad.
+    DELETE /api/activities/<int:pk>/ — Elimina una actividad.
+    """
+    try:
+        activity = Activity.objects.get(pk=pk, user_id=request.user.user_id)
+    except Activity.DoesNotExist:
+        return Response({
+            'status': 'error',
+            'message': 'Actividad no encontrada',
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method in ['PUT', 'PATCH']:
+        partial = request.method == 'PATCH'
+        serializer = ActivitySerializer(activity, data=request.data, partial=partial, context={'request': request})
+        if serializer.is_valid():
+            with transaction.atomic():
+                serializer.save()
+            return Response({
+                'status': 'success',
+                'message': 'Actividad actualizada exitosamente',
+                'data': serializer.data,
+            }, status=status.HTTP_200_OK)
+        return Response({
+            'status': 'error',
+            'message': 'Error de validación',
+            'errors': serializer.errors,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'DELETE':
+        with transaction.atomic():
+            activity.delete()
+        return Response({
+            'status': 'success',
+            'message': 'Actividad eliminada exitosamente',
+        }, status=status.HTTP_200_OK)
+
+
+@extend_schema(methods=['PUT', 'PATCH'], request=SubtaskSerializer, responses=SubtaskSerializer)
+@extend_schema(methods=['DELETE'], responses={204: None})
+@api_view(['PUT', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def subtask_detail(request, pk):
+    """
+    PUT/PATCH /api/subtasks/<int:pk>/ — Edita una subtarea.
+    DELETE /api/subtasks/<int:pk>/ — Elimina una subtarea.
+    """
+    try:
+        subtask = Subtask.objects.get(pk=pk, activity__user_id=request.user.user_id)
+    except Subtask.DoesNotExist:
+        return Response({
+            'status': 'error',
+            'message': 'Subtarea no encontrada',
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method in ['PUT', 'PATCH']:
+        partial = request.method == 'PATCH'
+        serializer = SubtaskSerializer(subtask, data=request.data, partial=partial)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'status': 'success',
+                'message': 'Subtarea actualizada exitosamente',
+                'data': serializer.data,
+            }, status=status.HTTP_200_OK)
+        return Response({
+            'status': 'error',
+            'message': 'Error de validación',
+            'errors': serializer.errors,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'DELETE':
+        subtask.delete()
+        return Response({
+            'status': 'success',
+            'message': 'Subtarea eliminada exitosamente',
+        }, status=status.HTTP_200_OK)
