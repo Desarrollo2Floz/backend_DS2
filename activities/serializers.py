@@ -1,13 +1,8 @@
 from datetime import date
 # pyrefly: ignore [missing-import]
 from rest_framework import serializers
-# pyrefly: ignore [missing-import]
-from rest_framework import status
-# pyrefly: ignore [missing-import]
-from django.db.models import Sum
 
 from .models import Activity, Subtask
-from users.models import DailyCapacity
 
 class SubtaskSerializer(serializers.ModelSerializer):
     """
@@ -60,6 +55,28 @@ class SubtaskSerializer(serializers.ModelSerializer):
                 'La fecha de la subtarea no puede ser anterior a hoy.'
             )
         return value
+    
+    def validate(self, data):
+        """
+        La target_date de la subtarea no puede ser mayor
+        que la due_date de la actividad asociada.
+        """
+        target_date = data.get('target_date', getattr(self.instance, 'target_date', None))
+        
+        # La actividad se inyecta en el contexto desde la vista
+        activity = self.context.get('activity')
+        if not activity and self.instance:
+            activity = self.instance.activity
+
+        if target_date and activity and target_date > activity.due_date:
+            raise serializers.ValidationError({
+                'target_date': (
+                    f'La fecha de la subtarea ({target_date}) no puede ser '
+                    f'posterior a la fecha límite de la actividad ({activity.due_date}).'
+                )
+            })
+        
+        return data
 
 
 class ActivitySerializer(serializers.ModelSerializer):
@@ -125,6 +142,35 @@ class ActivitySerializer(serializers.ModelSerializer):
                 'La fecha límite no puede ser anterior a hoy.'
             )
         return value
+
+    def validate(self, data):
+        """
+        Validación cruzada para la creación anidada.
+        Asegura que ninguna subtarea del payload supere la due_date de la actividad.
+        """
+        due_date = data.get('due_date', getattr(self.instance, 'due_date', None))
+
+        # --- Validación: due_date no puede ser anterior al target_date de subtareas ---
+        if self.instance and due_date:
+            # Buscar subtareas cuyo target_date sea posterior al nuevo due_date
+            conflicting_subtasks = self.instance.subtasks.filter(
+                target_date__gt=due_date
+            ).exclude(status='done')
+
+            if conflicting_subtasks.exists():
+                subtask_names = list(
+                    conflicting_subtasks.values_list('title', flat=True)[:5]
+                )
+                names_str = ', '.join(f'"{name}"' for name in subtask_names)
+                count = conflicting_subtasks.count()
+                raise serializers.ValidationError({
+                    'due_date': [
+                        f'No puedes mover la fecha límite al {due_date} porque '
+                        f'{count} subtarea(s) tienen fecha objetivo posterior: {names_str}. '
+                        f'Reprograma esas subtareas primero.'
+                    ]
+                })
+        return data
 
     def create(self, validated_data):
         """Crea la actividad junto con sus subtareas si se incluyen."""

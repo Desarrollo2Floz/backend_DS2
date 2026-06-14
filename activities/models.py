@@ -27,6 +27,7 @@ class Activity(models.Model):
     due_date = models.DateField()
     weight = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     user = models.ForeignKey('users.User', on_delete=models.CASCADE, related_name='activities', db_column='user_id')
+    # Nota: 'users.User' apunta a AUTH_USER_MODEL (definido en settings.py)
 
     class Meta:
         db_table = 'activity'

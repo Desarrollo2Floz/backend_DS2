@@ -1,15 +1,17 @@
 # pyrefly: ignore [missing-import]
-from django.shortcuts import render
-from rest_framework import status
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from django.db import transaction
-from drf_spectacular.utils import extend_schema, OpenApiParameter
+import logging
 from datetime import date
-from .models import Activity, Subtask
-from .serializers import ActivitySerializer, SubtaskSerializer
+from django.shortcuts import render
+from django.db import transaction
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from .models import Activity, Subtask
+from .serializers import ActivitySerializer, SubtaskSerializer
+
+logger = logging.getLogger(__name__)
 
 @extend_schema(methods=['GET'], responses=ActivitySerializer(many=True))
 @extend_schema(methods=['POST'], request=ActivitySerializer, responses=ActivitySerializer)
@@ -22,7 +24,7 @@ def activity_list_create(request):
     """
     if request.method == 'GET':
         activities = Activity.objects.prefetch_related('subtasks').filter(
-            user_id=request.user.user_id
+            user_id=request.user.id  # <-- Corregido aquí
         )
         serializer = ActivitySerializer(activities, many=True)
         return Response({
@@ -31,16 +33,22 @@ def activity_list_create(request):
         }, status=status.HTTP_200_OK)
 
     # POST
-    # Request needed to get user_id in the serializer validate context
     serializer = ActivitySerializer(data=request.data, context={'request': request})
     if serializer.is_valid():
-        with transaction.atomic():
-            activity = serializer.save(user_id=request.user.user_id)
-        return Response({
-            'status': 'success',
-            'message': 'Actividad creada exitosamente',
-            'data': ActivitySerializer(activity).data,
-        }, status=status.HTTP_201_CREATED)
+        try:
+            with transaction.atomic():
+                activity = serializer.save(user_id=request.user.id)  # <-- Corregido aquí
+            return Response({
+                'status': 'success',
+                'message': 'Actividad creada exitosamente',
+                'data': ActivitySerializer(activity).data,
+                }, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.error(f"Error al crear actividad: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'No se pudo guardar la actividad de forma segura.',
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return Response({
         'status': 'error',
@@ -59,7 +67,7 @@ def subtask_create(request, activity_id):
     try:
         activity = Activity.objects.get(
             pk=activity_id,
-            user_id=request.user.user_id
+            user_id=request.user.id  # <-- Corregido aquí
         )
     except Activity.DoesNotExist:
         return Response({
@@ -77,11 +85,7 @@ def subtask_create(request, activity_id):
                 'data': serializer.data,
             }, status=status.HTTP_201_CREATED)
         except Exception as e:
-            # Registrar el error real en los logs del servidor
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Error al crear subtarea: {str(e)}")
-            
             return Response({
                 'status': 'error',
                 'message': 'No se pudo guardar la subtarea. Ocurrió un error inesperado en el servidor.',
@@ -104,7 +108,7 @@ def activity_detail(request, pk):
     DELETE /api/activities/<int:pk>/ — Elimina una actividad.
     """
     try:
-        activity = Activity.objects.get(pk=pk, user_id=request.user.user_id)
+        activity = Activity.objects.get(pk=pk, user_id=request.user.id)  # <-- Corregido aquí
     except Activity.DoesNotExist:
         return Response({
             'status': 'error',
@@ -147,7 +151,7 @@ def subtask_detail(request, pk):
     DELETE /api/subtasks/<int:pk>/ — Elimina una subtarea.
     """
     try:
-        subtask = Subtask.objects.get(pk=pk, activity__user_id=request.user.user_id)
+        subtask = Subtask.objects.get(pk=pk, activity__user_id=request.user.id)  # <-- Corregido aquí
     except Subtask.DoesNotExist:
         return Response({
             'status': 'error',
@@ -195,7 +199,7 @@ def today_subtasks(request):
     today = date.today()
     
     subtasks = Subtask.objects.filter(
-        activity__user_id=request.user.user_id,
+        activity__user_id=request.user.id,  # <-- Corregido aquí
         target_date__isnull=False
     )
     
@@ -223,11 +227,8 @@ def today_subtasks(request):
             upcoming.append(subtask)
             
     # Ordenamiento
-    # Vencidas: más antiguas primero, empate menor esfuerzo
     overdue.sort(key=lambda x: (x.target_date, x.estimated_hours or 0))
-    # Para hoy: empate menor esfuerzo
     today_list.sort(key=lambda x: x.estimated_hours or 0)
-    # Próximas: más cercanas primero, empate menor esfuerzo
     upcoming.sort(key=lambda x: (x.target_date, x.estimated_hours or 0))
     
     return Response({
@@ -239,4 +240,3 @@ def today_subtasks(request):
             'rule': 'Orden: Vencidas (más antiguas), Hoy, Próximas (más cercanas). Empate: menor esfuerzo.'
         }
     }, status=status.HTTP_200_OK)
-
