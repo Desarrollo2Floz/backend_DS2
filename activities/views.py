@@ -98,69 +98,110 @@ def subtask_create(request, activity_id):
     }, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(methods=['GET'], responses=ActivitySerializer)
 @extend_schema(methods=['PUT', 'PATCH'], request=ActivitySerializer, responses=ActivitySerializer)
 @extend_schema(methods=['DELETE'], responses={204: None})
-@api_view(['PUT', 'PATCH', 'DELETE'])
+@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def activity_detail(request, pk):
     """
-    PUT/PATCH /api/activities/<int:pk>/ — Edita una actividad.
+    GET    /api/activities/<int:pk>/ — Detalle de una actividad con subtareas.
+    PUT    /api/activities/<int:pk>/ — Actualiza completamente una actividad.
+    PATCH  /api/activities/<int:pk>/ — Actualiza parcialmente una actividad.
     DELETE /api/activities/<int:pk>/ — Elimina una actividad.
     """
     try:
-        activity = Activity.objects.get(pk=pk, user_id=request.user.id)  # <-- Corregido aquí
+        # Usamos prefetch_related para optimizar la consulta de las subtareas anidadas
+        activity = Activity.objects.prefetch_related('subtasks').get(
+            pk=pk,
+            user_id=request.user.id
+        )
     except Activity.DoesNotExist:
         return Response({
             'status': 'error',
             'message': 'Actividad no encontrada',
         }, status=status.HTTP_404_NOT_FOUND)
 
-    if request.method in ['PUT', 'PATCH']:
-        partial = request.method == 'PATCH'
-        serializer = ActivitySerializer(activity, data=request.data, partial=partial, context={'request': request})
+    # --- GET: Ver detalle ---
+    if request.method == 'GET':
+        serializer = ActivitySerializer(activity)
+        return Response({
+            'status': 'success',
+            'data': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    # --- PUT/PATCH: Editar actividad ---
+    elif request.method in ['PUT', 'PATCH']:
+        serializer = ActivitySerializer(
+            activity,
+            data=request.data,
+            partial=(request.method == 'PATCH'),
+            context={'request': request}
+        )
         if serializer.is_valid():
             with transaction.atomic():
                 serializer.save()
             return Response({
                 'status': 'success',
                 'message': 'Actividad actualizada exitosamente',
-                'data': serializer.data,
+                'data': ActivitySerializer(activity).data, # Re-serializamos para tener los datos frescos
             }, status=status.HTTP_200_OK)
+            
         return Response({
             'status': 'error',
             'message': 'Error de validación',
             'errors': serializer.errors,
         }, status=status.HTTP_400_BAD_REQUEST)
 
+    # --- DELETE: Eliminar actividad ---
     elif request.method == 'DELETE':
         with transaction.atomic():
             activity.delete()
         return Response({
             'status': 'success',
             'message': 'Actividad eliminada exitosamente',
-        }, status=status.HTTP_200_OK)
+        }, status=status.HTTP_200_OK) # Puedes usar HTTP_204_NO_CONTENT si no envías JSON, pero el 200_OK con mensaje es más claro para tu frontend
 
 
+@extend_schema(methods=['GET'], responses=SubtaskSerializer)
 @extend_schema(methods=['PUT', 'PATCH'], request=SubtaskSerializer, responses=SubtaskSerializer)
 @extend_schema(methods=['DELETE'], responses={204: None})
-@api_view(['PUT', 'PATCH', 'DELETE'])
+@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def subtask_detail(request, pk):
     """
-    PUT/PATCH /api/subtasks/<int:pk>/ — Edita una subtarea.
+    GET    /api/subtasks/<int:pk>/ — Detalle de una subtarea.
+    PUT    /api/subtasks/<int:pk>/ — Actualiza completamente una subtarea.
+    PATCH  /api/subtasks/<int:pk>/ — Actualiza parcialmente una subtarea.
     DELETE /api/subtasks/<int:pk>/ — Elimina una subtarea.
     """
     try:
-        subtask = Subtask.objects.get(pk=pk, activity__user_id=request.user.id)  # <-- Corregido aquí
+        # Usamos select_related para traer los datos de la actividad padre más rápido si se necesitan
+        subtask = Subtask.objects.select_related('activity').get(
+            pk=pk,
+            activity__user_id=request.user.id
+        )
     except Subtask.DoesNotExist:
         return Response({
             'status': 'error',
             'message': 'Subtarea no encontrada',
         }, status=status.HTTP_404_NOT_FOUND)
 
-    if request.method in ['PUT', 'PATCH']:
-        partial = request.method == 'PATCH'
-        serializer = SubtaskSerializer(subtask, data=request.data, partial=partial)
+    # --- GET: Ver detalle ---
+    if request.method == 'GET':
+        serializer = SubtaskSerializer(subtask)
+        return Response({
+            'status': 'success',
+            'data': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    # --- PUT/PATCH: Editar subtarea ---
+    elif request.method in ['PUT', 'PATCH']:
+        serializer = SubtaskSerializer(
+            subtask, 
+            data=request.data, 
+            partial=(request.method == 'PATCH')
+        )
         if serializer.is_valid():
             serializer.save()
             return Response({
@@ -168,19 +209,20 @@ def subtask_detail(request, pk):
                 'message': 'Subtarea actualizada exitosamente',
                 'data': serializer.data,
             }, status=status.HTTP_200_OK)
+            
         return Response({
             'status': 'error',
             'message': 'Error de validación',
             'errors': serializer.errors,
         }, status=status.HTTP_400_BAD_REQUEST)
 
+    # --- DELETE: Eliminar subtarea ---
     elif request.method == 'DELETE':
         subtask.delete()
         return Response({
             'status': 'success',
             'message': 'Subtarea eliminada exitosamente',
         }, status=status.HTTP_200_OK)
-
 
 @extend_schema(
     methods=['GET'],
