@@ -22,7 +22,7 @@ class Activity(models.Model):
     id = models.BigAutoField(primary_key=True, db_column='activity_id')
     title = models.CharField(max_length=255)
     type = models.CharField(max_length=100, choices=TYPE_CHOICES)
-    course = models.CharField(max_length=255, null=True, blank=True)
+    course = models.CharField(max_length=255, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     due_date = models.DateField()
     weight = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
@@ -57,7 +57,7 @@ class Subtask(models.Model):
     target_date = models.DateField(null=True, blank=True)
     estimated_hours = models.FloatField(null=True, blank=True)
     description = models.TextField(blank=True, default='')
-    note = models.TextField(blank=True, null=True, default='', help_text="Nota opcional al posponer o cambiar estado")
+    note = models.TextField(blank=True, default='', help_text="Nota opcional al posponer o cambiar estado")
     done_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
