@@ -1,5 +1,5 @@
 from django.test import TestCase
-from .utils import calcular_descuento, es_mayor_de_edad, validar_email, calcular_promedio
+from .utils import calcular_descuento, es_mayor_de_edad, validar_email, calcular_promedio, validar_nombre_actividad
 
 # Test Integrante 1
 class DescuentoTest(TestCase):
@@ -34,6 +34,19 @@ class EmailTest(TestCase):
 
     def test_email_sin_punto(self):
         self.assertFalse(validar_email("test@gmailcom"))
+
+# Test Integrante 4
+class ValidarNombreActividadTest(TestCase):
+    def test_nombre_valido(self):
+        self.assertEqual(validar_nombre_actividad("  Estudiar Django  "), "Estudiar Django")
+
+    def test_nombre_vacio(self):
+        with self.assertRaises(ValueError):
+            validar_nombre_actividad("")
+
+    def test_nombre_solo_espacios(self):
+        with self.assertRaises(ValueError):
+            validar_nombre_actividad("   ")
 
 # Test Extra
 class PromedioTest(TestCase):

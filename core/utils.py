@@ -13,3 +13,8 @@ def calcular_promedio(notas):
     if len(notas) == 0:
         raise ValueError("La lista de notas no puede estar vacía")
     return sum(notas) / len(notas)
+
+def validar_nombre_actividad(nombre):
+    if not nombre or len(nombre.strip()) == 0:
+        raise ValueError("El nombre de la actividad no puede estar vacío")
+    return nombre.strip()
