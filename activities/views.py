@@ -13,6 +13,7 @@ from .models import Activity, Subtask
 from .serializers import ActivitySerializer, SubtaskSerializer, TodaySubtaskSerializer
 
 logger = logging.getLogger(__name__)
+MENSAJE_ERROR_VALIDACION = 'Error de validación'
 
 @extend_schema(methods=['GET'], responses=ActivitySerializer(many=True))
 @extend_schema(methods=['POST'], request=ActivitySerializer, responses=ActivitySerializer)
@@ -45,7 +46,7 @@ def activity_list_create(request):
                 'message': 'Actividad creada exitosamente',
                 'data': ActivitySerializer(activity).data,
             }, status=status.HTTP_201_CREATED)
-        except Exception:
+        except Exception as e:
             logger.error(f"Error al crear actividad: {str(e)}")
             return Response({
                 'status': 'error',
@@ -54,7 +55,7 @@ def activity_list_create(request):
 
     return Response({
         'status': 'error',
-        'message': 'Error de validación',
+        'message': MENSAJE_ERROR_VALIDACION,
         'errors': serializer.errors,
     }, status=status.HTTP_400_BAD_REQUEST)
 
@@ -102,7 +103,7 @@ def activity_detail(request, pk):
             }, status=status.HTTP_200_OK)
         return Response({
             'status': 'error',
-            'message': 'Error de validación',
+            'message': MENSAJE_ERROR_VALIDACION,
             'errors': serializer.errors,
         }, status=status.HTTP_400_BAD_REQUEST)
 
@@ -141,7 +142,7 @@ def subtask_create(request, activity_id):
                 'message': 'Subtarea creada exitosamente',
                 'data': serializer.data,
             }, status=status.HTTP_201_CREATED)
-        except Exception:
+        except Exception as e:
             # Registrar el error real en los logs del servidor
             logger.error(f"Error al crear subtarea: {str(e)}")
 
@@ -152,9 +153,34 @@ def subtask_create(request, activity_id):
 
     return Response({
         'status': 'error',
-        'message': 'Error de validación',
+        'message': MENSAJE_ERROR_VALIDACION,
         'errors': serializer.errors,
     }, status=status.HTTP_400_BAD_REQUEST)
+
+def _calcular_horas_capacidad(user_id, target_date):
+    """
+    Función auxiliar para calcular horas límite y planificadas
+    para reducir la complejidad de la vista.
+    """
+    from django.db.models import Sum
+    from users.models import DailyCapacity
+    from .models import Subtask
+
+    try:
+        limit_hours = float(DailyCapacity.objects.get(user_id=user_id).daily_limit_hours)
+    except DailyCapacity.DoesNotExist:
+        limit_hours = 6.0
+        
+    planned_hours = 0.0
+    if target_date:
+        planned_hours = Subtask.objects.filter(
+            activity__user_id=user_id,
+            target_date=target_date
+        ).exclude(status='done').aggregate(
+            total=Sum('estimated_hours')
+        )['total'] or 0.0
+
+    return limit_hours, float(planned_hours)
 
 @extend_schema(methods=['GET'], responses=SubtaskSerializer)
 @extend_schema(methods=['PUT', 'PATCH'], request=SubtaskSerializer, responses=SubtaskSerializer)
@@ -192,34 +218,18 @@ def subtask_detail(request, pk):
         if serializer.is_valid():
             serializer.save()
             
-            # --- US-13: Recálculo de las horas bajo el nuevo plan para mandarlo en la respuesta ---
-            from django.db.models import Sum
-            from users.models import DailyCapacity
-            
-            user_id = subtask.activity.user_id
-            target_date = subtask.target_date
-            
-            try:
-                limit_hours = float(DailyCapacity.objects.get(user_id=user_id).daily_limit_hours)
-            except DailyCapacity.DoesNotExist:
-                limit_hours = 6.0
-                
-            planned_hours = 0.0
-            if target_date:
-                planned_hours = Subtask.objects.filter(
-                    activity__user_id=user_id,
-                    target_date=target_date
-                ).exclude(status='done').aggregate(
-                    total=Sum('estimated_hours')
-                )['total'] or 0.0
-            
+            # Recálculo de las horas usando la función helper ---
+            limit_hours, planned_hours = _calcular_horas_capacidad(
+                user_id=subtask.activity.user_id,
+                target_date=subtask.target_date
+            )
+
             return Response({
                 'status': 'success',
-                'resolved': True,
-                'message': 'Conflicto resuelto' if request.method == 'PATCH' else 'Subtarea actualizada exitosamente',
-                'planned_hours': planned_hours,
-                'limit_hours': limit_hours,
+                'message': 'Subtarea actualizada exitosamente',
                 'data': serializer.data,
+                'limit_hours': limit_hours,
+                'planned_hours': planned_hours,
             }, status=status.HTTP_200_OK)
 
         if 'overload_conflict' in serializer.errors:
@@ -227,7 +237,7 @@ def subtask_detail(request, pk):
 
         return Response({
             'status': 'error',
-            'message': 'Error de validación',
+            'message': MENSAJE_ERROR_VALIDACION,
             'errors': serializer.errors,
         }, status=status.HTTP_400_BAD_REQUEST)
 
@@ -266,6 +276,7 @@ def subtask_detail(request, pk):
         ),
     ],
 )
+
 @api_view(['GET'])
 def today_subtasks(request):
     """
