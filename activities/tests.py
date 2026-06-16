@@ -20,7 +20,7 @@ class CrearActividadTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(
             username='testuser',
-            password='Test1234Ab',
+            password='Test1234Ab', #NOSONAR
             email='test@test.com'
         )
         self.client.force_authenticate(user=self.user)
@@ -67,7 +67,7 @@ class CrearSubtareaTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(
             username='testuser',
-            password='Test1234Ab',
+            password='Test1234Ab', #NOSONAR
             email='test@test.com'
         )
         self.client.force_authenticate(user=self.user)
