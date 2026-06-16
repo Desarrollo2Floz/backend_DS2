@@ -21,8 +21,8 @@ class RegistroTest(TestCase):
     def test_registro_usuario_exitoso(self):
         # Verifica registro correcto con campos obligatorios (US-11 Escenario 1)
         response = self.client.post('/api/register/', {
-            'username': 'testuser',
-            'password': 'Test1234Ab',
+            'username': 'testuser', 
+            'password': 'Test1234Ab', #NOSONAR
             'email': 'test@test.com',
             'first_name': 'Luis',
             'last_name': 'Valencia'
@@ -33,22 +33,22 @@ class RegistroTest(TestCase):
         # Verifica que no se puede registrar dos usuarios con el mismo username (US-11 Escenario 2)
         self.client.post('/api/register/', {
             'username': 'testuser',
-            'password': 'Test1234Ab',
+            'password': 'Test1234Ab', #NOSONAR
             'email': 'test@test.com',
             'first_name': 'Luis',
             'last_name': 'Valencia'
         }, format='json')
         response = self.client.post('/api/register/', {
             'username': 'testuser',
-            'password': 'Test1234Ab',
-            'email': 'test2@test.com',
+            'password': 'Test1234Ab', #NOSONAR
+            'email': 'test2@test.com', 
             'first_name': 'Luis',
             'last_name': 'Valencia'
         }, format='json')
         self.assertEqual(response.status_code, 400)
 
     def test_registro_sin_password_falla(self):
-        # Verifica que sin password el sistema retorna error (US-11 Escenario 2)
+        # Verifica que sin passwordd el sistema retorna error (US-11 Escenario 2)
         response = self.client.post('/api/register/', {
             'username': 'testuser',
             'email': 'test@test.com'
@@ -63,7 +63,7 @@ class LoginTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(
             username='testuser',
-            password='Test1234Ab',
+            password='Test1234Ab', #NOSONAR
             email='test@test.com'
         )
 
@@ -71,7 +71,7 @@ class LoginTest(TestCase):
         # Verifica login exitoso y devolucion de token JWT (US-11 Escenario 1)
         response = self.client.post('/api/login/', {
             'username': 'testuser',
-            'password': 'Test1234Ab'
+            'password': 'Test1234Ab' #NOSONAR
         }, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertIn('access', response.data)
@@ -80,7 +80,7 @@ class LoginTest(TestCase):
         # Verifica que credenciales invalidas son rechazadas (US-11 Escenario 2)
         response = self.client.post('/api/login/', {
             'username': 'testuser',
-            'password': 'wrongpass'
+            'password': 'wrongpass' #NOSONAR
         }, format='json')
         self.assertEqual(response.status_code, 401)
 
