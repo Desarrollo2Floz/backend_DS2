@@ -47,7 +47,7 @@ def activity_list_create(request):
                 'data': ActivitySerializer(activity).data,
             }, status=status.HTTP_201_CREATED)
         except Exception as e:
-            logger.error(f"Error al crear actividad: {str(e)}")
+            logger.exception("Error al crear actividad")
             return Response({
                 'status': 'error',
                 'message': 'No se pudo guardar la actividad de forma segura.',
@@ -144,7 +144,7 @@ def subtask_create(request, activity_id):
             }, status=status.HTTP_201_CREATED)
         except Exception as e:
             # Registrar el error real en los logs del servidor
-            logger.error(f"Error al crear subtarea: {str(e)}")
+            logger.exception("Error al crear subtarea")
 
             return Response({
                 'status': 'error',
