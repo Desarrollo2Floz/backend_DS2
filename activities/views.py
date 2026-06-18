@@ -382,3 +382,108 @@ def today_subtasks(request):
             'upcoming': TodaySubtaskSerializer(upcoming, many=True).data,
         },
     }, status=status.HTTP_200_OK)
+
+
+@extend_schema(
+    methods=['POST'],
+    request=OpenApiTypes.OBJECT,
+    responses={200: OpenApiTypes.OBJECT, 409: OpenApiTypes.OBJECT}
+)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def validate_overload(request):
+    """
+    POST /api/conflicts/overload/
+    Valida si asignar 'estimated_hours' a 'target_date' excede la capacidad diaria.
+    Body:
+    {
+        "target_date": "YYYY-MM-DD",
+        "estimated_hours": 2.5,
+        "subtask_id": 123 (opcional, para excluirla del cálculo)
+    }
+    """
+    from django.db.models import Sum
+    from users.models import DailyCapacity
+    from datetime import datetime, timedelta
+
+    user_id = request.user.id
+    
+    target_date_str = request.data.get('target_date')
+    estimated_hours = request.data.get('estimated_hours')
+    subtask_id = request.data.get('subtask_id')
+    
+    if not target_date_str or estimated_hours is None:
+        return Response({
+            'status': 'error',
+            'message': 'Faltan campos requeridos: target_date, estimated_hours'
+        }, status=status.HTTP_400_BAD_REQUEST)
+        
+    try:
+        target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
+        estimated_hours = float(estimated_hours)
+    except ValueError:
+        return Response({
+            'status': 'error',
+            'message': 'Formato de fecha o número inválido'
+        }, status=status.HTTP_400_BAD_REQUEST)
+        
+    try:
+        limit_hours = float(DailyCapacity.objects.get(user_id=user_id).daily_limit_hours)
+    except DailyCapacity.DoesNotExist:
+        limit_hours = 6.0
+        
+    qs = Subtask.objects.filter(
+        activity__user_id=user_id,
+        target_date=target_date
+    ).exclude(status='done')
+    
+    if subtask_id:
+        qs = qs.exclude(id=subtask_id)
+        
+    planned_hours = qs.aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+    total_after = planned_hours + estimated_hours
+    
+    if total_after > limit_hours:
+        exceeds_by = total_after - limit_hours
+        
+        alternative_dates = []
+        check_date = target_date + timedelta(days=1)
+        days_checked = 0
+        
+        due_date = None
+        if subtask_id:
+            try:
+                subtask = Subtask.objects.get(id=subtask_id)
+                due_date = subtask.activity.due_date
+            except Subtask.DoesNotExist:
+                pass
+                
+        while len(alternative_dates) < 1 and days_checked < 30:
+            if due_date and check_date > due_date:
+                break
+                
+            day_planned_hours = Subtask.objects.filter(
+                activity__user_id=user_id,
+                target_date=check_date
+            ).exclude(status='done').aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+            
+            if (day_planned_hours + exceeds_by) <= limit_hours:
+                alternative_dates.append(str(check_date))
+                
+            check_date += timedelta(days=1)
+            days_checked += 1
+            
+        return Response({
+            'status': 'conflict',
+            'planned_hours': planned_hours,
+            'limit_hours': limit_hours,
+            'exceeds_by': exceeds_by,
+            'alternative_dates': alternative_dates
+        }, status=status.HTTP_409_CONFLICT)
+        
+    return Response({
+        'status': 'ok',
+        'planned_hours': planned_hours,
+        'limit_hours': limit_hours,
+        'exceeds_by': 0.0
+    }, status=status.HTTP_200_OK)

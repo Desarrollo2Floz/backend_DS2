@@ -10,4 +10,5 @@ urlpatterns = [
     path('activities/<int:pk>/', views.activity_detail, name='activity-detail'),
     path('subtasks/today/', views.today_subtasks, name='today-subtasks'),
     path('subtasks/<int:pk>/', views.subtask_detail, name='subtask-detail'),
+    path('conflicts/overload/', views.validate_overload, name='validate-overload'),
 ]
