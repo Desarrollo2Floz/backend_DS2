@@ -1,6 +1,7 @@
 from datetime import date
-# pyrefly: ignore [missing-import]
+from django.db.models import Sum
 from rest_framework import serializers
+from users.models import DailyCapacity
 
 from .models import Activity, Subtask
 
@@ -62,12 +63,46 @@ class SubtaskSerializer(serializers.ModelSerializer):
         que la due_date de la actividad asociada.
         """
         target_date = data.get('target_date', getattr(self.instance, 'target_date', None))
+        status_val = data.get('status', getattr(self.instance, 'status', 'pending'))
         
+        # --- Protección de Estados ---
+        if self.instance:
+            old_status = self.instance.status
+            old_target_date = self.instance.target_date
+            
+            # Reprogramación automática: Si estaba 'postponed' o 'overdue' y se le asigna una
+            # nueva fecha objetivo diferente a la que tenía, vuelve a estado 'pending'.
+            if old_status in ['postponed', 'overdue'] and target_date and target_date != old_target_date:
+                data['status'] = 'pending'
+                status_val = 'pending'
+            elif status_val != old_status and status_val not in ['done', 'pending', 'postponed']:
+                # El usuario sólo debería poder pasar a 'done', 'pending' o 'postponed' manualmente
+                pass
+        else:
+            # Creación nueva: no puede nacer ni done, ni postponed ni overdue
+            if status_val not in ['pending', 'done']:
+                data['status'] = 'pending'
+                status_val = 'pending'
+
+        from django.utils import timezone
+        
+        if self.instance and self.instance.note:
+            new_note = data.get('note', None)
+            if new_note == '' or new_note is None:
+                data['note'] = self.instance.note
+
+        if status_val == 'done':
+            # Se completará automáticamente el campo `done_at` si no se proporciona
+            if not data.get('done_at') and not getattr(self.instance, 'done_at', None):
+                data['done_at'] = timezone.now()
+        else:
+            # Se borrará el campo `done_at` si el estado ya no es "completado".
+            data['done_at'] = None
+            
         # La actividad se inyecta en el contexto desde la vista
         activity = self.context.get('activity')
         if not activity and self.instance:
             activity = self.instance.activity
-
         if target_date and activity and target_date > activity.due_date:
             raise serializers.ValidationError({
                 'target_date': (
@@ -76,7 +111,86 @@ class SubtaskSerializer(serializers.ModelSerializer):
                 )
             })
         
+        # --- US-12 Detección de sobrecarga diaria ---
+        if target_date and activity:
+            user_id = activity.user_id
+            
+            # 1. Obtener límite diario (fallback 6h si no existe)
+            try:
+                capacity_obj = DailyCapacity.objects.get(user_id=user_id)
+                limit_hours = float(capacity_obj.daily_limit_hours)
+            except DailyCapacity.DoesNotExist:
+                limit_hours = 6.0
+                
+            # 2. Calcular horas planificadas para ese día (excluyendo 'done')
+            # Si estamos actualizando (self.instance), excluir la propia subtarea
+            # para no sumar sus horas antiguas que ya estaban planeadas.
+            qs = Subtask.objects.filter(
+                activity__user_id=user_id,
+                target_date=target_date
+            ).exclude(status='done')
+            
+            if self.instance:
+                qs = qs.exclude(id=self.instance.id)
+                
+            planned_hours = qs.aggregate(
+                total=Sum('estimated_hours')
+            )['total'] or 0.0
+            
+            # 3. Validar si excede (planned + nueva estimación)
+            # Priorizamos la estimación nueva en request, o la que ya tenía la subtarea
+            new_estimated = data.get('estimated_hours', getattr(self.instance, 'estimated_hours', 0.0))
+            
+            # Si el nuevo estado es 'done', esa tarea deja de contar para la sobrecarga
+            if status_val == 'done':
+                new_estimated = 0.0
+                
+            total_after_save = planned_hours + new_estimated
+            
+            if total_after_save > limit_hours:
+                exceeds_by = total_after_save - limit_hours
+                
+                # Buscar 1 día alternativo
+                from datetime import timedelta
+                alternative_dates = []
+                check_date = target_date + timedelta(days=1)
+                days_checked = 0
+                max_days_to_check = 30 # Limitar la búsqueda a 30 días para evitar loops infinitos
+                
+                while len(alternative_dates) < 1 and days_checked < max_days_to_check:
+                    # Verificar si check_date supera el due_date de la actividad
+                    if activity and activity.due_date and check_date > activity.due_date:
+                        break # No buscar más allá de la fecha de entrega
+
+                    # Calcular horas planificadas en check_date
+                    day_planned_hours = Subtask.objects.filter(
+                        activity__user_id=user_id,
+                        target_date=check_date
+                    ).exclude(status='done').aggregate(
+                        total=Sum('estimated_hours')
+                    )['total'] or 0.0
+                    
+                    if (day_planned_hours + exceeds_by) <= limit_hours:
+                        alternative_dates.append(str(check_date))
+                        
+                    check_date += timedelta(days=1)
+                    days_checked += 1
+
+                raise serializers.ValidationError({
+                    'overload_conflict': [{
+                        'status': 'error',
+                        'resolved': False,
+                        'message': f'Quedarías con {total_after_save:g}h planificadas (límite {limit_hours:g}h)',
+                        'planned_hours': planned_hours,
+                        'limit_hours': limit_hours,
+                        'exceeds_by': exceeds_by,
+                        'hours_to_reduce': exceeds_by,
+                        'alternative_dates': alternative_dates
+                    }]
+                })
+        
         return data
+    
 
 
 class ActivitySerializer(serializers.ModelSerializer):

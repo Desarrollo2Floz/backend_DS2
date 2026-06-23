@@ -4,7 +4,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.password_validation import validate_password
 
-from .models import User
+from .models import DailyCapacity, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -90,4 +90,66 @@ class LoginSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         data['user'] = UserSerializer(self.user).data
+        return data
+    
+class DailyCapacitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DailyCapacity
+        fields = ['daily_limit_hours']
+
+    def validate_daily_limit_hours(self, value):
+        if value < 1 or value > 16:
+            raise serializers.ValidationError("El límite diario debe estar entre 1 y 16 horas.")
+        return value
+
+    def validate(self, data):
+        request = self.context.get('request')
+        if not request or not hasattr(request, 'user'):
+            return data
+
+        new_limit = data.get('daily_limit_hours')
+        if new_limit is None:
+            if self.instance:
+                new_limit = self.instance.daily_limit_hours
+            else:
+                return data
+
+        user_id = request.user.id
+
+        from activities.models import Subtask
+        from django.db.models import Sum
+        from datetime import date
+
+        today = date.today()
+
+        # Single fast aggregate query: find dates with planned hours > new limit
+        overloaded_dates = list(
+            Subtask.objects.filter(
+                activity__user_id=user_id,
+                target_date__gte=today
+            ).exclude(status='done').values('target_date').annotate(
+                total_hours=Sum('estimated_hours')
+            ).filter(total_hours__gt=new_limit)
+        )
+
+        if overloaded_dates:
+            conflicts = []
+            for item in overloaded_dates:
+                exceeds_by = float(item['total_hours']) - float(new_limit)
+                conflicts.append({
+                    'date': str(item['target_date']),
+                    'planned_hours': float(item['total_hours']),
+                    'limit_hours': float(new_limit),
+                    'exceeds_by': exceeds_by,
+                })
+
+            raise serializers.ValidationError({
+                'overload_conflict': [{
+                    'status': 'error',
+                    'resolved': False,
+                    'message': 'No puedes reducir tu capacidad porque tienes días planificados que superan este nuevo límite.',
+                    'conflicts': conflicts
+                }]
+            })
+
         return data
