@@ -93,3 +93,12 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+
+# Configuración de JWT - Fix token-refresh
+# Se extiende el tiempo del access token para mejorar la experiencia del usuario
+# y se activa el refresh automático desde el frontend
+from datetime import timedelta
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+}
