@@ -217,7 +217,12 @@ def subtask_detail(request, pk):
         serializer = SubtaskSerializer(subtask, data=request.data, partial=(request.method == 'PATCH'))
         if serializer.is_valid():
             serializer.save()
-            
+
+            # Fix streak-counter: al marcar la subtarea como 'done',
+            # se actualiza la racha del usuario (días consecutivos con actividad)
+            if subtask.status == 'done':
+                request.user.update_streak()
+
             # Recálculo de las horas usando la función helper ---
             limit_hours, planned_hours = _calcular_horas_capacidad(
                 user_id=subtask.activity.user_id,
