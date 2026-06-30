@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .serializers import LoginSerializer, RegisterSerializer, UserSerializer, DailyCapacitySerializer
+from .serializers import LoginSerializer, RegisterSerializer, UserSerializer, DailyCapacitySerializer, StreakSerializer
 from .models import User, DailyCapacity
 
 class LoginView(TokenObtainPairView):
@@ -79,6 +79,17 @@ def daily_capacity_view(request):
             'message': 'El límite debe estar entre 1 y 16 horas. Intenta de nuevo.',
             'errors': serializer.errors,
         }, status=status.HTTP_400_BAD_REQUEST)
+    
+@extend_schema(methods=['GET'], responses=StreakSerializer)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_user_streak(request):
+    """Obtiene la racha actual del usuario autenticado."""
+    serializer = StreakSerializer(request.user)
+    return Response({
+        'status': 'success',
+        'data': serializer.data,
+    }, status=status.HTTP_200_OK)
 
 @extend_schema(methods=['GET'], responses=UserSerializer)
 @api_view(['GET'])

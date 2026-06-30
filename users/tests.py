@@ -94,3 +94,51 @@ class LoginTest(TestCase):
         self.client.force_authenticate(user=self.user)
         response = self.client.get('/api/me/')
         self.assertEqual(response.status_code, 200)
+
+
+from datetime import date, timedelta
+
+class StreakTest(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='streakuser',
+            password='Test1234Ab',
+            email='streak@test.com'
+        )
+
+    def test_streak_starts_at_one(self):
+        # Al iniciar actividad por primera vez la racha debe ser 1
+        self.user.update_streak()
+        self.assertEqual(self.user.streak_current, 1)
+        self.assertEqual(self.user.streak_best, 1)
+        self.assertEqual(self.user.streak_last_day, date.today())
+
+    def test_streak_same_day_does_not_increment(self):
+        # Repetir actividad el mismo día no debe incrementar la racha
+        self.user.update_streak()
+        self.user.update_streak()
+        self.assertEqual(self.user.streak_current, 1)
+        self.assertEqual(self.user.streak_best, 1)
+
+    def test_streak_increments_consecutive_days(self):
+        # Actividad en días consecutivos debe incrementar la racha
+        self.user.streak_last_day = date.today() - timedelta(days=1)
+        self.user.streak_current = 1
+        self.user.streak_best = 1
+        self.user.save()
+
+        self.user.update_streak()
+        self.assertEqual(self.user.streak_current, 2)
+        self.assertEqual(self.user.streak_best, 2)
+
+    def test_streak_resets_after_gap(self):
+        # Dejar pasar más de 1 día debe reiniciar la racha a 1
+        self.user.streak_last_day = date.today() - timedelta(days=2)
+        self.user.streak_current = 5
+        self.user.streak_best = 5
+        self.user.save()
+
+        self.user.update_streak()
+        self.assertEqual(self.user.streak_current, 1)
+        self.assertEqual(self.user.streak_best, 5) # Conserva el mejor histórico

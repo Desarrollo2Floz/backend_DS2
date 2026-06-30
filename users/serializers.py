@@ -153,3 +153,9 @@ class DailyCapacitySerializer(serializers.ModelSerializer):
             })
 
         return data
+    
+class StreakSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['streak_current', 'streak_last_day', 'streak_best']
+        read_only_fields = ['streak_current', 'streak_last_day', 'streak_best']
