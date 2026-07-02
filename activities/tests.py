@@ -12,6 +12,9 @@ from activities.serializers import (
 )
 from unittest.mock import MagicMock
 import pytest
+import os
+
+TEST_PASS = os.environ.get('TEST_PASS', 'Test1234Ab!')
 
 # =============================================
 # Tests US-01 - Crear actividad evaluativa
@@ -24,15 +27,17 @@ import pytest
 User = get_user_model()
 client = Client()
 
-def test_activity_list_view():
-    url = reverse("activities:list")
-    response = client.get(url)
+@pytest.mark.django_db
+def test_activity_list_view(auth_client):
+    url = reverse("activity-list-create")
+    response = auth_client.get(url)
     assert response.status_code == 200
-    assert "activities" in response.context
+    assert response.data is not None
 
-def test_activity_detail_404():
-    url = reverse("activities:detail", args=[9999])
-    response = client.get(url)
+@pytest.mark.django_db
+def test_activity_detail_404(auth_client):
+    url = reverse("activity-detail", args=[9999])
+    response = auth_client.get(url)
     assert response.status_code == 404
 
 @pytest.fixture
@@ -44,7 +49,7 @@ def api_client():
 def user():
     return User.objects.create_user(
         username="tester",
-        password="Pass1234!",
+        password=TEST_PASS,
         email="tester@example.com",
     )
 
@@ -78,7 +83,7 @@ class CrearActividadTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(
             username='testuser',
-            password='Test1234Ab', #NOSONAR
+            password=TEST_PASS,
             email='test@test.com'
         )
         self.client.force_authenticate(user=self.user)
@@ -125,7 +130,7 @@ class CrearSubtareaTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(
             username='testuser',
-            password='Test1234Ab', #NOSONAR
+            password=TEST_PASS,
             email='test@test.com'
         )
         self.client.force_authenticate(user=self.user)
@@ -170,7 +175,7 @@ class CrearSubtareaTest(TestCase):
 
 class ActivitySerializerTests(TestCase):
     def test_activity_serializer_fields(self):
-        user = User.objects.create_user(username='actuser', password='pass')
+        user = User.objects.create_user(username='actuser', password=TEST_PASS)
         activity = Activity.objects.create(
             user=user,
             title='Test Activity',
@@ -186,7 +191,7 @@ class ActivitySerializerTests(TestCase):
         self.assertIn('subtasks', serializer.data)
 
     def test_activity_serializer_create(self):
-        user = User.objects.create_user(username='actuser', password='pass')
+        user = User.objects.create_user(username='actuser', password=TEST_PASS)
         data = {
             'title': 'New Activity',
             'type': 'exam',
@@ -205,7 +210,7 @@ class ActivitySerializerTests(TestCase):
 
 class SubtaskSerializerTests(TestCase):
     def test_subtask_serializer_fields(self):
-        user = User.objects.create_user(username='subuser', password='pass')
+        user = User.objects.create_user(username='subuser', password=TEST_PASS)
         activity = Activity.objects.create(
             user=user,
             title='Act',
@@ -225,7 +230,7 @@ class SubtaskSerializerTests(TestCase):
         self.assertIn('estimated_hours', serializer.data)
 
     def test_subtask_serializer_update(self):
-        user = User.objects.create_user(username='subuser', password='pass')
+        user = User.objects.create_user(username='subuser', password=TEST_PASS)
         activity = Activity.objects.create(
             user=user,
             title='Act',
@@ -252,7 +257,7 @@ class SubtaskSerializerTests(TestCase):
 
 class TodaySubtaskSerializerTests(TestCase):
     def test_today_subtask_serializer_output(self):
-        user = User.objects.create_user(username='todayuser', password='pass')
+        user = User.objects.create_user(username='todayuser', password=TEST_PASS)
         activity = Activity.objects.create(
             user=user,
             title='Act',
@@ -271,3 +276,97 @@ class TodaySubtaskSerializerTests(TestCase):
         self.assertIn('title', serializer.data)
         self.assertIn('estimated_hours', serializer.data)
         self.assertIn('parent_activity', serializer.data)
+
+class ActivityDetailTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='detailuser', password=TEST_PASS)
+        self.client.force_authenticate(user=self.user)
+        self.activity = Activity.objects.create(
+            user=self.user,
+            title='Old Title',
+            type='exam',
+            due_date=date.today() + timedelta(days=10),
+        )
+        self.url = f'/api/activities/{self.activity.id}/'
+
+    def test_get_activity(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['data']['title'], 'Old Title')
+
+    def test_update_activity(self):
+        response = self.client.put(self.url, {
+            'title': 'New Title',
+            'type': 'project',
+            'due_date': (date.today() + timedelta(days=15)).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['data']['title'], 'New Title')
+
+    def test_delete_activity(self):
+        response = self.client.delete(self.url)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(Activity.objects.count(), 0)
+
+    def test_get_activity_not_found(self):
+        response = self.client.get('/api/activities/999999/')
+        self.assertEqual(response.status_code, 404)
+
+
+class SubtaskDetailTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='subuser2', password=TEST_PASS)
+        self.client.force_authenticate(user=self.user)
+        self.activity = Activity.objects.create(
+            user=self.user, title='Act', type='exam', due_date=date.today() + timedelta(days=10)
+        )
+        self.subtask = Subtask.objects.create(
+            activity=self.activity, title='Sub', estimated_hours=2.0, target_date=date.today(), status='pending'
+        )
+        self.url = f'/api/subtasks/{self.subtask.id}/'
+
+    def test_get_subtask(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['data']['title'], 'Sub')
+
+    def test_update_subtask(self):
+        response = self.client.patch(self.url, {'title': 'Updated Sub', 'status': 'done'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['data']['title'], 'Updated Sub')
+        self.assertEqual(response.data['data']['status'], 'done')
+
+    def test_delete_subtask(self):
+        response = self.client.delete(self.url)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(Subtask.objects.count(), 0)
+
+
+class ValidateOverloadTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='overloaduser', password=TEST_PASS)
+        self.client.force_authenticate(user=self.user)
+        self.url = '/api/conflicts/overload/'
+
+    def test_validate_overload_ok(self):
+        response = self.client.post(self.url, {
+            'target_date': date.today().isoformat(),
+            'estimated_hours': 2.0
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['status'], 'ok')
+
+    def test_validate_overload_conflict(self):
+        response = self.client.post(self.url, {
+            'target_date': date.today().isoformat(),
+            'estimated_hours': 10.0
+        }, format='json')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data['status'], 'conflict')
+
+    def test_validate_overload_missing_fields(self):
+        response = self.client.post(self.url, {'estimated_hours': 2.0}, format='json')
+        self.assertEqual(response.status_code, 400)

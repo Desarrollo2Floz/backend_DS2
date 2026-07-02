@@ -57,7 +57,8 @@ class ValidarNombreActividadEspaciosTest(TestCase):
 class ActivitiesViewsTest(APITestCase):
     def setUp(self):
         # 1. Crear un usuario de prueba
-        dummy_pass = 'test_pass_123'
+        import os
+        dummy_pass = os.environ.get('TEST_PASS', 'test_pass_123!')
         self.user = User.objects.create_user(
             username='testuser',
             password=dummy_pass, 

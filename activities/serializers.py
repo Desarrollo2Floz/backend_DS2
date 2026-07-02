@@ -57,52 +57,111 @@ class SubtaskSerializer(serializers.ModelSerializer):
             )
         return value
     
-    def validate(self, data):
-        """
-        La target_date de la subtarea no puede ser mayor
-        que la due_date de la actividad asociada.
-        """
-        target_date = data.get('target_date', getattr(self.instance, 'target_date', None))
-        status_val = data.get('status', getattr(self.instance, 'status', 'pending'))
-        
-        # --- Protección de Estados ---
+    def _protect_status(self, data, target_date, status_val):
         if self.instance:
             old_status = self.instance.status
             old_target_date = self.instance.target_date
-            
-            # Reprogramación automática: Si estaba 'postponed' o 'overdue' y se le asigna una
-            # nueva fecha objetivo diferente a la que tenía, vuelve a estado 'pending'.
             if old_status in ['postponed', 'overdue'] and target_date and target_date != old_target_date:
                 data['status'] = 'pending'
                 status_val = 'pending'
             elif status_val != old_status and status_val not in ['done', 'pending', 'postponed']:
-                # El usuario sólo debería poder pasar a 'done', 'pending' o 'postponed' manualmente
                 pass
         else:
-            # Creación nueva: no puede nacer ni done, ni postponed ni overdue
             if status_val not in ['pending', 'done']:
                 data['status'] = 'pending'
                 status_val = 'pending'
+        return status_val
 
+    def _handle_done_at_and_note(self, data, status_val):
         from django.utils import timezone
-        
         if self.instance and self.instance.note:
             new_note = data.get('note', None)
             if new_note == '' or new_note is None:
                 data['note'] = self.instance.note
 
         if status_val == 'done':
-            # Se completará automáticamente el campo `done_at` si no se proporciona
             if not data.get('done_at') and not getattr(self.instance, 'done_at', None):
                 data['done_at'] = timezone.now()
         else:
-            # Se borrará el campo `done_at` si el estado ya no es "completado".
             data['done_at'] = None
+
+    def _get_capacity_limit(self, user_id):
+        try:
+            return float(DailyCapacity.objects.get(user_id=user_id).daily_limit_hours)
+        except DailyCapacity.DoesNotExist:
+            return 6.0
+
+    def _get_alternative_dates(self, target_date, activity, user_id, exceeds_by, limit_hours):
+        from datetime import timedelta
+        alternative_dates = []
+        check_date = target_date + timedelta(days=1)
+        for _ in range(30):
+            if len(alternative_dates) >= 1:
+                break
+            if activity and activity.due_date and check_date > activity.due_date:
+                break
+            day_planned = Subtask.objects.filter(
+                activity__user_id=user_id,
+                target_date=check_date
+            ).exclude(status='done').aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+            if (day_planned + exceeds_by) <= limit_hours:
+                alternative_dates.append(str(check_date))
+            check_date += timedelta(days=1)
+        return alternative_dates
+
+    def _check_daily_overload(self, data, target_date, activity, status_val):
+        if not target_date or not activity:
+            return
+        
+        user_id = activity.user_id
+        limit_hours = self._get_capacity_limit(user_id)
             
-        # La actividad se inyecta en el contexto desde la vista
-        activity = self.context.get('activity')
-        if not activity and self.instance:
-            activity = self.instance.activity
+        qs = Subtask.objects.filter(
+            activity__user_id=user_id,
+            target_date=target_date
+        ).exclude(status='done')
+        
+        if self.instance:
+            qs = qs.exclude(id=self.instance.id)
+            
+        planned_hours = qs.aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+        
+        new_estimated = data.get('estimated_hours', getattr(self.instance, 'estimated_hours', 0.0))
+        if status_val == 'done':
+            new_estimated = 0.0
+            
+        total_after_save = planned_hours + new_estimated
+        
+        if total_after_save > limit_hours:
+            exceeds_by = total_after_save - limit_hours
+            alternative_dates = self._get_alternative_dates(target_date, activity, user_id, exceeds_by, limit_hours)
+            
+            raise serializers.ValidationError({
+                'overload_conflict': [{
+                    'status': 'error',
+                    'resolved': False,
+                    'message': f'Quedarías con {total_after_save:g}h planificadas (límite {limit_hours:g}h)',
+                    'planned_hours': planned_hours,
+                    'limit_hours': limit_hours,
+                    'exceeds_by': exceeds_by,
+                    'hours_to_reduce': exceeds_by,
+                    'alternative_dates': alternative_dates
+                }]
+            })
+
+    def validate(self, data):
+        """
+        Validación general de la subtarea, maneja estados, fechas 
+        y evita la sobrecarga diaria.
+        """
+        target_date = data.get('target_date', getattr(self.instance, 'target_date', None))
+        status_val = data.get('status', getattr(self.instance, 'status', 'pending'))
+        
+        status_val = self._protect_status(data, target_date, status_val)
+        self._handle_done_at_and_note(data, status_val)
+            
+        activity = self.context.get('activity') or (self.instance.activity if self.instance else None)
+        
         if target_date and activity and target_date > activity.due_date:
             raise serializers.ValidationError({
                 'target_date': (
@@ -111,84 +170,7 @@ class SubtaskSerializer(serializers.ModelSerializer):
                 )
             })
         
-        # --- US-12 Detección de sobrecarga diaria ---
-        if target_date and activity:
-            user_id = activity.user_id
-            
-            # 1. Obtener límite diario (fallback 6h si no existe)
-            try:
-                capacity_obj = DailyCapacity.objects.get(user_id=user_id)
-                limit_hours = float(capacity_obj.daily_limit_hours)
-            except DailyCapacity.DoesNotExist:
-                limit_hours = 6.0
-                
-            # 2. Calcular horas planificadas para ese día (excluyendo 'done')
-            # Si estamos actualizando (self.instance), excluir la propia subtarea
-            # para no sumar sus horas antiguas que ya estaban planeadas.
-            qs = Subtask.objects.filter(
-                activity__user_id=user_id,
-                target_date=target_date
-            ).exclude(status='done')
-            
-            if self.instance:
-                qs = qs.exclude(id=self.instance.id)
-                
-            planned_hours = qs.aggregate(
-                total=Sum('estimated_hours')
-            )['total'] or 0.0
-            
-            # 3. Validar si excede (planned + nueva estimación)
-            # Priorizamos la estimación nueva en request, o la que ya tenía la subtarea
-            new_estimated = data.get('estimated_hours', getattr(self.instance, 'estimated_hours', 0.0))
-            
-            # Si el nuevo estado es 'done', esa tarea deja de contar para la sobrecarga
-            if status_val == 'done':
-                new_estimated = 0.0
-                
-            total_after_save = planned_hours + new_estimated
-            
-            if total_after_save > limit_hours:
-                exceeds_by = total_after_save - limit_hours
-                
-                # Buscar 1 día alternativo
-                from datetime import timedelta
-                alternative_dates = []
-                check_date = target_date + timedelta(days=1)
-                days_checked = 0
-                max_days_to_check = 30 # Limitar la búsqueda a 30 días para evitar loops infinitos
-                
-                while len(alternative_dates) < 1 and days_checked < max_days_to_check:
-                    # Verificar si check_date supera el due_date de la actividad
-                    if activity and activity.due_date and check_date > activity.due_date:
-                        break # No buscar más allá de la fecha de entrega
-
-                    # Calcular horas planificadas en check_date
-                    day_planned_hours = Subtask.objects.filter(
-                        activity__user_id=user_id,
-                        target_date=check_date
-                    ).exclude(status='done').aggregate(
-                        total=Sum('estimated_hours')
-                    )['total'] or 0.0
-                    
-                    if (day_planned_hours + exceeds_by) <= limit_hours:
-                        alternative_dates.append(str(check_date))
-                        
-                    check_date += timedelta(days=1)
-                    days_checked += 1
-
-                raise serializers.ValidationError({
-                    'overload_conflict': [{
-                        'status': 'error',
-                        'resolved': False,
-                        'message': f'Quedarías con {total_after_save:g}h planificadas (límite {limit_hours:g}h)',
-                        'planned_hours': planned_hours,
-                        'limit_hours': limit_hours,
-                        'exceeds_by': exceeds_by,
-                        'hours_to_reduce': exceeds_by,
-                        'alternative_dates': alternative_dates
-                    }]
-                })
-        
+        self._check_daily_overload(data, target_date, activity, status_val)
         return data
     
 
@@ -266,53 +248,58 @@ class ActivitySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError('El peso no puede ser mayor a 100.')
         return value
 
-    def validate(self, data):
-        """
-        Validación cruzada para la creación anidada.
-        Asegura que ninguna subtarea del payload supere la due_date de la actividad.
-        """
-        due_date = data.get('due_date', getattr(self.instance, 'due_date', None))
+    def _validate_due_date_against_subtasks(self, due_date):
+        if not self.instance or not due_date:
+            return
+        
+        conflicting_subtasks = self.instance.subtasks.filter(
+            target_date__gt=due_date
+        ).exclude(status='done')
 
-        # --- Validación: due_date no puede ser anterior al target_date de subtareas ---
-        if self.instance and due_date:
-            # Buscar subtareas cuyo target_date sea posterior al nuevo due_date
-            conflicting_subtasks = self.instance.subtasks.filter(
-                target_date__gt=due_date
-            ).exclude(status='done')
+        if conflicting_subtasks.exists():
+            subtask_names = list(conflicting_subtasks.values_list('title', flat=True)[:5])
+            names_str = ', '.join(f'"{name}"' for name in subtask_names)
+            count = conflicting_subtasks.count()
+            raise serializers.ValidationError({
+                'due_date': [
+                    f'No puedes mover la fecha límite al {due_date} porque '
+                    f'{count} subtarea(s) tienen fecha objetivo posterior: {names_str}. '
+                    f'Reprograma esas subtareas primero.'
+                ]
+            })
 
-            if conflicting_subtasks.exists():
-                subtask_names = list(
-                    conflicting_subtasks.values_list('title', flat=True)[:5]
-                )
-                names_str = ', '.join(f'"{name}"' for name in subtask_names)
-                count = conflicting_subtasks.count()
-                raise serializers.ValidationError({
-                    'due_date': [
-                        f'No puedes mover la fecha límite al {due_date} porque '
-                        f'{count} subtarea(s) tienen fecha objetivo posterior: {names_str}. '
-                        f'Reprograma esas subtareas primero.'
-                    ]
-                })
-        # Solo correr validacion batch de subtasks si estamos creando (no hay id aún)
-        if self.instance:
-            return data
+    def _get_capacity_limit(self, user_id):
+        try:
+            return float(DailyCapacity.objects.get(user_id=user_id).daily_limit_hours)
+        except DailyCapacity.DoesNotExist:
+            return 6.0
 
-        subtasks_data = data.get('subtasks', [])
-        if not subtasks_data:
-            return data
-            
+    def _get_alternative_dates_activity(self, target_date, due_date, user_id, exceeds_by, limit_hours):
+        from datetime import timedelta
+        alternative_dates = []
+        check_date = target_date + timedelta(days=1)
+        for _ in range(30):
+            if len(alternative_dates) >= 1:
+                break
+            if due_date and check_date > due_date:
+                break
+            day_planned = Subtask.objects.filter(
+                activity__user_id=user_id,
+                target_date=check_date
+            ).exclude(status='done').aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+            if (day_planned + exceeds_by) <= limit_hours:
+                alternative_dates.append(str(check_date))
+            check_date += timedelta(days=1)
+        return alternative_dates
+
+    def _check_subtasks_overload(self, subtasks_data, due_date):
         request = self.context.get('request')
         if not request or not hasattr(request, 'user'):
-            return data
+            return
             
         user_id = request.user.id
-        try:
-            capacity_obj = DailyCapacity.objects.get(user_id=user_id)
-            limit_hours = float(capacity_obj.daily_limit_hours)
-        except DailyCapacity.DoesNotExist:
-            limit_hours = 6.0
+        limit_hours = self._get_capacity_limit(user_id)
 
-        # Agrupar las peticiones por fecha para saber si en este mimo envío intentan sobrecargar
         dates_hours = {}
         for st in subtasks_data:
             td = st.get('target_date')
@@ -320,45 +307,18 @@ class ActivitySerializer(serializers.ModelSerializer):
             if td:
                 dates_hours[td] = dates_hours.get(td, 0.0) + est
                 
-        # Verificar cada fecha contra la BD
         for target_date, added_hours in dates_hours.items():
             planned_hours = Subtask.objects.filter(
                 activity__user_id=user_id,
                 target_date=target_date
-            ).exclude(status='done').aggregate(
-                total=Sum('estimated_hours')
-            )['total'] or 0.0
+            ).exclude(status='done').aggregate(total=Sum('estimated_hours'))['total'] or 0.0
             
             total_after_save = planned_hours + added_hours
             if total_after_save > limit_hours:
                 exceeds_by = total_after_save - limit_hours
-                
-                # Buscar 1 día alternativo
-                from datetime import timedelta
-                alternative_dates = []
-                check_date = target_date + timedelta(days=1)
-                days_checked = 0
-                max_days_to_check = 30
-                
-                while len(alternative_dates) < 1 and days_checked < max_days_to_check:
-                    # Verificar si check_date supera el due_date de la actividad
-                    if due_date and check_date > due_date:
-                        break # No buscar más allá de la fecha de entrega
-                    
-                    # Calcular horas planificadas en check_date
-                    day_planned_hours = Subtask.objects.filter(
-                        activity__user_id=user_id,
-                        target_date=check_date
-                    ).exclude(status='done').aggregate(
-                        total=Sum('estimated_hours')
-                    )['total'] or 0.0
-                    
-                    if (day_planned_hours + exceeds_by) <= limit_hours:
-                        alternative_dates.append(str(check_date))
-                        
-                    check_date += timedelta(days=1)
-                    days_checked += 1
-                
+                alternative_dates = self._get_alternative_dates_activity(
+                    target_date, due_date, user_id, exceeds_by, limit_hours
+                )
                 raise serializers.ValidationError({
                     'overload_conflict': [{
                         'status': 'error',
@@ -371,6 +331,22 @@ class ActivitySerializer(serializers.ModelSerializer):
                         'alternative_dates': alternative_dates
                     }]
                 })
+
+    def validate(self, data):
+        """
+        Validación cruzada para la creación anidada.
+        Asegura que ninguna subtarea del payload supere la due_date de la actividad.
+        """
+        due_date = data.get('due_date', getattr(self.instance, 'due_date', None))
+        self._validate_due_date_against_subtasks(due_date)
+
+        if self.instance:
+            return data
+
+        subtasks_data = data.get('subtasks', [])
+        if subtasks_data:
+            self._check_subtasks_overload(subtasks_data, due_date)
+            
         return data
 
 

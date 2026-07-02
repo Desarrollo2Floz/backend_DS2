@@ -389,6 +389,70 @@ def today_subtasks(request):
     }, status=status.HTTP_200_OK)
 
 
+def _parse_overload_request(data):
+    from datetime import datetime
+    target_date_str = data.get('target_date')
+    estimated_hours = data.get('estimated_hours')
+    subtask_id = data.get('subtask_id')
+    
+    if not target_date_str or estimated_hours is None:
+        raise ValueError('Faltan campos requeridos: target_date, estimated_hours')
+        
+    try:
+        target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
+        estimated_hours = float(estimated_hours)
+    except ValueError:
+        raise ValueError('Formato de fecha o número inválido')
+        
+    return target_date, estimated_hours, subtask_id
+
+def _get_due_date_for_subtask(subtask_id):
+    if not subtask_id:
+        return None
+    try:
+        from .models import Subtask
+        subtask = Subtask.objects.get(id=subtask_id)
+        return subtask.activity.due_date
+    except Subtask.DoesNotExist:
+        return None
+
+def _get_planned_hours_for_date(user_id, target_date, subtask_id):
+    from django.db.models import Sum
+    from .models import Subtask
+    qs = Subtask.objects.filter(
+        activity__user_id=user_id,
+        target_date=target_date
+    ).exclude(status='done')
+    
+    if subtask_id:
+        qs = qs.exclude(id=subtask_id)
+        
+    return qs.aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+
+def _find_alternative_dates(target_date, user_id, exceeds_by, limit_hours, due_date):
+    from django.db.models import Sum
+    from datetime import timedelta
+    from .models import Subtask
+    alternative_dates = []
+    check_date = target_date + timedelta(days=1)
+    days_checked = 0
+    
+    while len(alternative_dates) < 1 and days_checked < 30:
+        if due_date and check_date > due_date:
+            break
+            
+        day_planned_hours = Subtask.objects.filter(
+            activity__user_id=user_id,
+            target_date=check_date
+        ).exclude(status='done').aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+        
+        if (day_planned_hours + exceeds_by) <= limit_hours:
+            alternative_dates.append(str(check_date))
+            
+        check_date += timedelta(days=1)
+        days_checked += 1
+    return alternative_dates
+
 @extend_schema(
     methods=['POST'],
     request=OpenApiTypes.OBJECT,
@@ -407,29 +471,16 @@ def validate_overload(request):
         "subtask_id": 123 (opcional, para excluirla del cálculo)
     }
     """
-    from django.db.models import Sum
     from users.models import DailyCapacity
-    from datetime import datetime, timedelta
 
     user_id = request.user.id
     
-    target_date_str = request.data.get('target_date')
-    estimated_hours = request.data.get('estimated_hours')
-    subtask_id = request.data.get('subtask_id')
-    
-    if not target_date_str or estimated_hours is None:
-        return Response({
-            'status': 'error',
-            'message': 'Faltan campos requeridos: target_date, estimated_hours'
-        }, status=status.HTTP_400_BAD_REQUEST)
-        
     try:
-        target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
-        estimated_hours = float(estimated_hours)
-    except ValueError:
+        target_date, estimated_hours, subtask_id = _parse_overload_request(request.data)
+    except ValueError as e:
         return Response({
             'status': 'error',
-            'message': 'Formato de fecha o número inválido'
+            'message': str(e)
         }, status=status.HTTP_400_BAD_REQUEST)
         
     try:
@@ -437,46 +488,13 @@ def validate_overload(request):
     except DailyCapacity.DoesNotExist:
         limit_hours = 6.0
         
-    qs = Subtask.objects.filter(
-        activity__user_id=user_id,
-        target_date=target_date
-    ).exclude(status='done')
-    
-    if subtask_id:
-        qs = qs.exclude(id=subtask_id)
-        
-    planned_hours = qs.aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+    planned_hours = _get_planned_hours_for_date(user_id, target_date, subtask_id)
     total_after = planned_hours + estimated_hours
     
     if total_after > limit_hours:
         exceeds_by = total_after - limit_hours
-        
-        alternative_dates = []
-        check_date = target_date + timedelta(days=1)
-        days_checked = 0
-        
-        due_date = None
-        if subtask_id:
-            try:
-                subtask = Subtask.objects.get(id=subtask_id)
-                due_date = subtask.activity.due_date
-            except Subtask.DoesNotExist:
-                pass
-                
-        while len(alternative_dates) < 1 and days_checked < 30:
-            if due_date and check_date > due_date:
-                break
-                
-            day_planned_hours = Subtask.objects.filter(
-                activity__user_id=user_id,
-                target_date=check_date
-            ).exclude(status='done').aggregate(total=Sum('estimated_hours'))['total'] or 0.0
-            
-            if (day_planned_hours + exceeds_by) <= limit_hours:
-                alternative_dates.append(str(check_date))
-                
-            check_date += timedelta(days=1)
-            days_checked += 1
+        due_date = _get_due_date_for_subtask(subtask_id)
+        alternative_dates = _find_alternative_dates(target_date, user_id, exceeds_by, limit_hours, due_date)
             
         return Response({
             'status': 'conflict',
