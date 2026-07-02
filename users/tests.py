@@ -1,6 +1,13 @@
 from django.test import TestCase
 from rest_framework.test import APIClient
 from django.contrib.auth import get_user_model
+from users.models import DailyCapacity
+from users.serializers import (
+    UserSerializer,
+    RegisterSerializer,
+    DailyCapacitySerializer,
+    StreakSerializer,
+)
 
 # =============================================
 # Tests US-11 - Autenticacion minima
@@ -10,6 +17,121 @@ from django.contrib.auth import get_user_model
 # =============================================
 
 User = get_user_model()
+
+
+# =============================================
+# Tests de serializers
+# =============================================
+
+class UserSerializerTests(TestCase):
+    def test_user_serializer_fields(self):
+        user = User.objects.create_user(
+            username='testuser',
+            password='testpass',
+            email='test@example.com',
+        )
+        serializer = UserSerializer(user)
+        self.assertEqual(
+            set(serializer.data.keys()),
+            {
+                'id', 'uuid_user', 'first_name', 'last_name',
+                'streak_current', 'streak_last_day', 'streak_best',
+            },
+        )
+        for field in ['id', 'uuid_user', 'streak_current', 'streak_last_day', 'streak_best']:
+            self.assertTrue(serializer.fields[field].read_only)
+
+
+class RegisterSerializerTests(TestCase):
+    def test_register_success(self):
+        data = {
+            'username': 'newuser',
+            'email': 'new@example.com',
+            'first_name': 'John',
+            'last_name': 'Doe',
+            'password': 'StrongPass123!',
+        }
+        serializer = RegisterSerializer(data=data)
+        self.assertTrue(serializer.is_valid())
+        user = serializer.save()
+        self.assertEqual(user.username, 'newuser')
+        self.assertTrue(user.check_password(data['password']))
+
+    def test_register_invalid_username(self):
+        User.objects.create_user(username='existing', password='pass')
+        data = {
+            'username': 'existing',
+            'email': 'test@example.com',
+            'first_name': 'John',
+            'last_name': 'Doe',
+            'password': 'StrongPass123!',
+        }
+        serializer = RegisterSerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('username', serializer.errors)
+
+    def test_register_invalid_email(self):
+        User.objects.create_user(
+            username='tester',
+            password='pass',
+            email='existing@example.com',
+        )
+        data = {
+            'username': 'newuser',
+            'email': 'existing@example.com',
+            'first_name': 'John',
+            'last_name': 'Doe',
+            'password': 'StrongPass123!',
+        }
+        serializer = RegisterSerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('email', serializer.errors)
+
+    def test_register_password_too_short(self):
+        data = {
+            'username': 'shortpw',
+            'email': 'test@example.com',
+            'first_name': 'John',
+            'last_name': 'Doe',
+            'password': 'short',
+        }
+        serializer = RegisterSerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('password', serializer.errors)
+
+
+class DailyCapacitySerializerTests(TestCase):
+    def test_validate_daily_limit_hours(self):
+        # valid
+        serializer = DailyCapacitySerializer(data={'daily_limit_hours': 5.5})
+        self.assertTrue(serializer.is_valid())
+        self.assertEqual(serializer.validated_data['daily_limit_hours'], 5.5)
+
+        # invalid ranges
+        for value in (0, -1, 20):
+            serializer = DailyCapacitySerializer(data={'daily_limit_hours': value})
+            self.assertFalse(serializer.is_valid())
+            self.assertIn('daily_limit_hours', serializer.errors)
+
+    def test_daily_capacity_update(self):
+        user = User.objects.create_user(username='capuser', password='pass')
+        capacity = DailyCapacity.objects.create(user=user, daily_limit_hours=6.0)
+        serializer = DailyCapacitySerializer(
+            instance=capacity,
+            data={'daily_limit_hours': 8.0},
+        )
+        self.assertTrue(serializer.is_valid())
+        serializer.save()
+        self.assertEqual(capacity.daily_limit_hours, 8.0)
+
+
+class StreakSerializerTests(TestCase):
+    def test_streak_serializer_readonly(self):
+        user = User.objects.create_user(username='streakuser', password='pass')
+        serializer = StreakSerializer(user)
+        self.assertTrue(serializer.fields['streak_current'].read_only)
+        self.assertTrue(serializer.fields['streak_last_day'].read_only)
+        self.assertTrue(serializer.fields['streak_best'].read_only)
 
 
 class RegistroTest(TestCase):
