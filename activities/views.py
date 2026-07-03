@@ -1,0 +1,512 @@
+# pyrefly: ignore [missing-import]
+import logging
+from django.shortcuts import render
+from datetime import date, timedelta
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.db import transaction
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+from drf_spectacular.types import OpenApiTypes
+from .models import Activity, Subtask
+from .serializers import ActivitySerializer, SubtaskSerializer, TodaySubtaskSerializer
+
+logger = logging.getLogger(__name__)
+MENSAJE_ERROR_VALIDACION = 'Error de validación'
+
+@extend_schema(methods=['GET'], responses=ActivitySerializer(many=True))
+@extend_schema(methods=['POST'], request=ActivitySerializer, responses=ActivitySerializer)
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def activity_list_create(request):
+    """
+    GET  /api/activities/ — Lista todas las actividades con sus subtareas.
+    POST /api/activities/ — Crea una actividad con subtareas anidadas.
+    """
+    if request.method == 'GET':
+        activities = Activity.objects.prefetch_related('subtasks').filter(
+            user_id=request.user.id
+        )
+        serializer = ActivitySerializer(activities, many=True)
+        return Response({
+            'status': 'success',
+            'data': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    # POST
+    # Request needed to get user_id in the serializer validate context
+    serializer = ActivitySerializer(data=request.data, context={'request': request})
+    if serializer.is_valid():
+        try:
+            with transaction.atomic():
+                activity = serializer.save(user_id=request.user.id)
+            return Response({
+                'status': 'success',
+                'message': 'Actividad creada exitosamente',
+                'data': ActivitySerializer(activity).data,
+            }, status=status.HTTP_201_CREATED)
+        except Exception:
+            logger.exception("Error al crear actividad")
+            return Response({
+                'status': 'error',
+                'message': 'No se pudo guardar la actividad de forma segura.',
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'status': 'error',
+        'message': MENSAJE_ERROR_VALIDACION,
+        'errors': serializer.errors,
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+@extend_schema(methods=['GET'], responses=ActivitySerializer)
+@extend_schema(methods=['PUT', 'PATCH'], request=ActivitySerializer, responses=ActivitySerializer)
+@extend_schema(methods=['DELETE'], responses=None)
+@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
+def activity_detail(request, pk):
+    """
+    GET    /api/activities/<int:pk>/ — Detalle de una actividad con subtareas.
+    PUT    /api/activities/<int:pk>/ — Actualiza completamente una actividad.
+    PATCH  /api/activities/<int:pk>/ — Actualiza parcialmente una actividad.
+    DELETE /api/activities/<int:pk>/ — Elimina una actividad.
+    """
+    try:
+        activity = Activity.objects.prefetch_related('subtasks').get(
+            pk=pk,
+            user_id=request.user.id
+            )
+    except Activity.DoesNotExist:
+        return Response({
+            'status': 'error',
+            'message': 'Actividad no encontrada',
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        serializer = ActivitySerializer(activity)
+        return Response({
+            'status': 'success',
+            'data': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    elif request.method in ['PUT', 'PATCH']:
+        serializer = ActivitySerializer(
+            activity,
+            data=request.data,
+            partial=(request.method == 'PATCH'),
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'status': 'success',
+                'message': 'Actividad actualizada exitosamente',
+                'data': ActivitySerializer(activity).data,
+            }, status=status.HTTP_200_OK)
+        return Response({
+            'status': 'error',
+            'message': MENSAJE_ERROR_VALIDACION,
+            'errors': serializer.errors,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'DELETE':
+        activity.delete()
+        return Response({
+            'status': 'success',
+            'message': 'Actividad eliminada exitosamente',
+        }, status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(methods=['POST'], request=SubtaskSerializer, responses=SubtaskSerializer)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def subtask_create(request, activity_id):
+    """
+    POST /api/activities/<int:activity_id>/subtasks/ — Crea una subtarea para una actividad.
+    """
+    try:
+        activity = Activity.objects.get(
+            pk=activity_id,
+            user_id=request.user.id
+        )
+    except Activity.DoesNotExist:
+        return Response({
+            'status': 'error',
+            'message': 'Actividad no encontrada',
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = SubtaskSerializer(data=request.data, context={'activity': activity})
+    if serializer.is_valid():
+        try:
+            serializer.save(activity=activity)
+            return Response({
+                'status': 'success',
+                'message': 'Subtarea creada exitosamente',
+                'data': serializer.data,
+            }, status=status.HTTP_201_CREATED)
+        except Exception:
+            # Registrar el error real en los logs del servidor
+            logger.exception("Error al crear subtarea")
+
+            return Response({
+                'status': 'error',
+                'message': 'No se pudo guardar la subtarea. Ocurrió un error inesperado en el servidor.',
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'status': 'error',
+        'message': MENSAJE_ERROR_VALIDACION,
+        'errors': serializer.errors,
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+def _calcular_horas_capacidad(user_id, target_date):
+    """
+    Función auxiliar para calcular horas límite y planificadas
+    para reducir la complejidad de la vista.
+    """
+    from django.db.models import Sum
+    from users.models import DailyCapacity
+    from .models import Subtask
+
+    try:
+        limit_hours = float(DailyCapacity.objects.get(user_id=user_id).daily_limit_hours)
+    except DailyCapacity.DoesNotExist:
+        limit_hours = 6.0
+        
+    planned_hours = 0.0
+    if target_date:
+        planned_hours = Subtask.objects.filter(
+            activity__user_id=user_id,
+            target_date=target_date
+        ).exclude(status='done').aggregate(
+            total=Sum('estimated_hours')
+        )['total'] or 0.0
+
+    return limit_hours, float(planned_hours)
+
+@extend_schema(methods=['GET'], responses=SubtaskSerializer)
+@extend_schema(methods=['PUT', 'PATCH'], request=SubtaskSerializer, responses=SubtaskSerializer)
+@extend_schema(methods=['DELETE'], responses=None)
+@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
+def subtask_detail(request, pk):
+    """
+    GET    /api/subtasks/<uuid:pk>/ — Detalle de una subtarea.
+    PUT    /api/subtasks/<uuid:pk>/ — Actualiza completamente una subtarea.
+    PATCH  /api/subtasks/<uuid:pk>/ — Actualiza parcialmente una subtarea.
+    DELETE /api/subtasks/<uuid:pk>/ — Elimina una subtarea.
+    """
+    from .models import Subtask
+
+    try:
+        subtask = Subtask.objects.get(
+            pk=pk,
+            activity__user_id=request.user.id
+        )                             
+    except Subtask.DoesNotExist:
+        return Response({
+            'status': 'error',
+            'message': 'Subtarea no encontrada',
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        serializer = SubtaskSerializer(subtask)
+        return Response({
+            'status': 'success',
+            'data': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    elif request.method in ['PUT', 'PATCH']:
+        serializer = SubtaskSerializer(subtask, data=request.data, partial=(request.method == 'PATCH'))
+        if serializer.is_valid():
+            serializer.save()
+
+            # Fix streak-counter: al marcar la subtarea como 'done',
+            # se actualiza la racha del usuario (días consecutivos con actividad)
+            if subtask.status == 'done':
+                request.user.update_streak()
+
+            # Recálculo de las horas usando la función helper ---
+            limit_hours, planned_hours = _calcular_horas_capacidad(
+                user_id=subtask.activity.user_id,
+                target_date=subtask.target_date
+            )
+
+            return Response({
+                'status': 'success',
+                'message': 'Subtarea actualizada exitosamente',
+                'data': serializer.data,
+                'limit_hours': limit_hours,
+                'planned_hours': planned_hours,
+            }, status=status.HTTP_200_OK)
+
+        if 'overload_conflict' in serializer.errors:
+            return Response(serializer.errors['overload_conflict'][0], status=status.HTTP_409_CONFLICT)
+
+        return Response({
+            'status': 'error',
+            'message': MENSAJE_ERROR_VALIDACION,
+            'errors': serializer.errors,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'DELETE':
+        subtask.delete()
+        return Response({
+            'status': 'success',
+            'message': 'Subtarea eliminada exitosamente',
+        }, status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(
+    methods=['GET'],
+    responses=TodaySubtaskSerializer(many=True),
+    parameters=[
+        OpenApiParameter(
+            name='course',
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            description='Filtrar por nombre de curso',
+            required=False,
+        ),
+        OpenApiParameter(
+            name='status',
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            description='Filtrar por estado: pending, done, postponed, overdue',
+            required=False,
+        ),
+        OpenApiParameter(
+            name='days',
+            type=OpenApiTypes.INT,
+            location=OpenApiParameter.QUERY,
+            description='Limitar próximas a los siguientes N días',
+            required=False,
+        ),
+    ],
+)
+
+@api_view(['GET'])
+def today_subtasks(request):
+    """
+    GET /api/subtasks/today/ — Vista "Hoy": subtareas agrupadas por prioridad.
+
+    Agrupación:
+      - overdue:  target_date < hoy  (más antigua primero)
+      - today:    target_date == hoy
+      - upcoming: target_date > hoy  (más cercana primero)
+
+    Desempate en todos los grupos: menor estimated_hours primero.
+
+    Query params opcionales:
+      - course: filtra por curso de la actividad padre
+      - status: filtra por estado de la subtarea (pending, done, postponed, overdue)
+      - days:   limita "upcoming" a los próximos N días
+    """
+    today = date.today()
+    user_id = request.user.id
+
+    # Obtenemos los IDs de las actividades del usuario
+    user_activity_ids = Activity.objects.filter(user_id=user_id).values_list('id', flat=True)
+    
+    # Hacemos el update usando el IN en lugar de un JOIN directo (activity__user_id),
+    # lo cual es más seguro y compatible con PostgreSQL en producción.
+    Subtask.objects.filter(
+        activity_id__in=user_activity_ids,
+        target_date__lt=today,
+        status='pending',
+    ).update(status='overdue')
+
+    Subtask.objects.filter(
+        activity_id__in=user_activity_ids,
+        target_date__gte=today,
+        status='overdue',
+    ).update(status='pending')
+
+    Activity.objects.filter(
+        id__in=user_activity_ids,
+        due_date__lt=today,
+        status='pending',
+    ).update(status='overdue')
+
+    Activity.objects.filter(
+        id__in=user_activity_ids,
+        due_date__gte=today,
+        status='overdue',
+    ).update(status='pending')
+
+    # Base queryset (ya viene todo actualizado)
+    qs = Subtask.objects.select_related('activity').filter(
+        activity__user_id=user_id,
+    )
+
+    # --- Filtros opcionales ---
+    course = request.query_params.get('course')
+    if course:
+        qs = qs.filter(activity__course=course)
+
+    status_filter = request.query_params.get('status')
+    if status_filter and status_filter.lower() != 'all':
+        qs = qs.filter(status=status_filter)
+    elif status_filter is None or status_filter == '':
+        # Por defecto excluir completadas
+        qs = qs.exclude(status='done')
+
+    # --- Agrupación por fecha ---
+    overdue = qs.filter(
+        target_date__lt=today
+    ).order_by('target_date', 'estimated_hours')
+
+    today_tasks = qs.filter(
+        target_date=today
+    ).order_by('estimated_hours')
+
+    upcoming = qs.filter(
+        target_date__gt=today
+    ).order_by('target_date', 'estimated_hours')
+
+    # Si se pasa ?days=N, limitar upcoming
+    days = request.query_params.get('days')
+    if days is not None:
+        try:
+            days = int(days)
+            if days < 0:
+                return Response({
+                    'status': 'error',
+                    'message': 'El parámetro "days" debe ser >= 0.',
+                }, status=status.HTTP_400_BAD_REQUEST)
+            limit_date = today + timedelta(days=days)
+            upcoming = upcoming.filter(target_date__lte=limit_date)
+        except ValueError:
+            return Response({
+                'status': 'error',
+                'message': 'El parámetro "days" debe ser un número entero.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({
+        'status': 'success',
+        'data': {
+            'overdue': TodaySubtaskSerializer(overdue, many=True).data,
+            'today': TodaySubtaskSerializer(today_tasks, many=True).data,
+            'upcoming': TodaySubtaskSerializer(upcoming, many=True).data,
+        },
+    }, status=status.HTTP_200_OK)
+
+
+def _parse_overload_request(data):
+    from datetime import datetime
+    target_date_str = data.get('target_date')
+    estimated_hours = data.get('estimated_hours')
+    subtask_id = data.get('subtask_id')
+    
+    if not target_date_str or estimated_hours is None:
+        raise ValueError('Faltan campos requeridos: target_date, estimated_hours')
+        
+    try:
+        target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
+        estimated_hours = float(estimated_hours)
+    except ValueError:
+        raise ValueError('Formato de fecha o número inválido')
+        
+    return target_date, estimated_hours, subtask_id
+
+def _get_due_date_for_subtask(subtask_id):
+    if not subtask_id:
+        return None
+    try:
+        from .models import Subtask
+        subtask = Subtask.objects.get(id=subtask_id)
+        return subtask.activity.due_date
+    except Subtask.DoesNotExist:
+        return None
+
+def _get_planned_hours_for_date(user_id, target_date, subtask_id):
+    from django.db.models import Sum
+    from .models import Subtask
+    qs = Subtask.objects.filter(
+        activity__user_id=user_id,
+        target_date=target_date
+    ).exclude(status='done')
+    
+    if subtask_id:
+        qs = qs.exclude(id=subtask_id)
+        
+    return qs.aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+
+def _find_alternative_dates(target_date, user_id, exceeds_by, limit_hours, due_date):
+    from django.db.models import Sum
+    from datetime import timedelta
+    from .models import Subtask
+    alternative_dates = []
+    check_date = target_date + timedelta(days=1)
+    days_checked = 0
+    
+    while len(alternative_dates) < 1 and days_checked < 30:
+        if due_date and check_date > due_date:
+            break
+            
+        day_planned_hours = Subtask.objects.filter(
+            activity__user_id=user_id,
+            target_date=check_date
+        ).exclude(status='done').aggregate(total=Sum('estimated_hours'))['total'] or 0.0
+        
+        if (day_planned_hours + exceeds_by) <= limit_hours:
+            alternative_dates.append(str(check_date))
+            
+        check_date += timedelta(days=1)
+        days_checked += 1
+    return alternative_dates
+
+@extend_schema(
+    methods=['POST'],
+    request=OpenApiTypes.OBJECT,
+    responses={200: OpenApiTypes.OBJECT, 409: OpenApiTypes.OBJECT}
+)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def validate_overload(request):
+    """
+    POST /api/conflicts/overload/
+    Valida si asignar 'estimated_hours' a 'target_date' excede la capacidad diaria.
+    Body:
+    {
+        "target_date": "YYYY-MM-DD",
+        "estimated_hours": 2.5,
+        "subtask_id": 123 (opcional, para excluirla del cálculo)
+    }
+    """
+    from users.models import DailyCapacity
+
+    user_id = request.user.id
+    
+    try:
+        target_date, estimated_hours, subtask_id = _parse_overload_request(request.data)
+    except ValueError as e:
+        return Response({
+            'status': 'error',
+            'message': str(e)
+        }, status=status.HTTP_400_BAD_REQUEST)
+        
+    try:
+        limit_hours = float(DailyCapacity.objects.get(user_id=user_id).daily_limit_hours)
+    except DailyCapacity.DoesNotExist:
+        limit_hours = 6.0
+        
+    planned_hours = _get_planned_hours_for_date(user_id, target_date, subtask_id)
+    total_after = planned_hours + estimated_hours
+    
+    if total_after > limit_hours:
+        exceeds_by = total_after - limit_hours
+        due_date = _get_due_date_for_subtask(subtask_id)
+        alternative_dates = _find_alternative_dates(target_date, user_id, exceeds_by, limit_hours, due_date)
+            
+        return Response({
+            'status': 'conflict',
+            'planned_hours': planned_hours,
+            'limit_hours': limit_hours,
+            'exceeds_by': exceeds_by,
+            'alternative_dates': alternative_dates
+        }, status=status.HTTP_409_CONFLICT)
+        
+    return Response({
+        'status': 'ok',
+        'planned_hours': planned_hours,
+        'limit_hours': limit_hours,
+        'exceeds_by': 0.0
+    }, status=status.HTTP_200_OK)
