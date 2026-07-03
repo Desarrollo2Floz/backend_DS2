@@ -65,7 +65,9 @@ class SubtaskSerializer(serializers.ModelSerializer):
                 data['status'] = 'pending'
                 status_val = 'pending'
             elif status_val != old_status and status_val not in ['done', 'pending', 'postponed']:
-                pass
+                raise serializers.ValidationError({
+                    'status': f'Estado inválido: "{status_val}". Los valores permitidos son: done, pending o postponed.'
+                })
         else:
             if status_val not in ['pending', 'done']:
                 data['status'] = 'pending'
