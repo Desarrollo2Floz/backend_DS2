@@ -32,7 +32,7 @@ class UserSerializerTests(TestCase):
     def test_user_serializer_fields(self):
         user = User.objects.create_user(
             username='testuser',
-            password=TEST_PASS,
+            password=TEST_PASS,# NOSONAR
             email='test@example.com',
         )
         serializer = UserSerializer(user)
@@ -54,7 +54,7 @@ class RegisterSerializerTests(TestCase):
             'email': 'new@example.com',
             'first_name': 'John',
             'last_name': 'Doe',
-            'password': TEST_PASS,
+            'password': TEST_PASS,  # NOSONAR
         }
         serializer = RegisterSerializer(data=data)
         self.assertTrue(serializer.is_valid())
@@ -63,13 +63,13 @@ class RegisterSerializerTests(TestCase):
         self.assertTrue(user.check_password(data['password']))
 
     def test_register_invalid_username(self):
-        User.objects.create_user(username='existing', password='pass')
+        User.objects.create_user(username='existing', password='pass')  # NOSONAR
         data = {
             'username': 'existing',
             'email': 'test@example.com',
             'first_name': 'John',
             'last_name': 'Doe',
-            'password': TEST_PASS,
+            'password': TEST_PASS,  # NOSONAR
         }
         serializer = RegisterSerializer(data=data)
         self.assertFalse(serializer.is_valid())
@@ -78,7 +78,7 @@ class RegisterSerializerTests(TestCase):
     def test_register_invalid_email(self):
         User.objects.create_user(
             username='tester',
-            password=TEST_PASS,
+            password=TEST_PASS, # NOSONAR
             email='existing@example.com',
         )
         data = {
@@ -86,7 +86,7 @@ class RegisterSerializerTests(TestCase):
             'email': 'existing@example.com',
             'first_name': 'John',
             'last_name': 'Doe',
-            'password': TEST_PASS,
+            'password': TEST_PASS,  # NOSONAR
         }
         serializer = RegisterSerializer(data=data)
         self.assertFalse(serializer.is_valid())
@@ -98,7 +98,7 @@ class RegisterSerializerTests(TestCase):
             'email': 'test@example.com',
             'first_name': 'John',
             'last_name': 'Doe',
-            'password': TEST_SHORT,
+            'password': TEST_SHORT,  # NOSONAR
         }
         serializer = RegisterSerializer(data=data)
         self.assertFalse(serializer.is_valid())
@@ -119,7 +119,7 @@ class DailyCapacitySerializerTests(TestCase):
             self.assertIn('daily_limit_hours', serializer.errors)
 
     def test_daily_capacity_update(self):
-        user = User.objects.create_user(username='capuser', password='pass')
+        user = User.objects.create_user(username='capuser', password='pass')  # NOSONAR
         capacity = DailyCapacity.objects.create(user=user, daily_limit_hours=6.0)
         serializer = DailyCapacitySerializer(
             instance=capacity,
@@ -132,7 +132,7 @@ class DailyCapacitySerializerTests(TestCase):
 
 class StreakSerializerTests(TestCase):
     def test_streak_serializer_readonly(self):
-        user = User.objects.create_user(username='streakuser', password='pass')
+        user = User.objects.create_user(username='streakuser', password='pass')  # NOSONAR
         serializer = StreakSerializer(user)
         self.assertTrue(serializer.fields['streak_current'].read_only)
         self.assertTrue(serializer.fields['streak_last_day'].read_only)
@@ -149,7 +149,7 @@ class RegistroTest(TestCase):
         # Verifica registro correcto con campos obligatorios (US-11 Escenario 1)
         response = self.client.post('/api/register/', {
             'username': 'testuser', 
-            'password': TEST_PASS,
+            'password': TEST_PASS,  # NOSONAR
             'email': 'test@test.com',
             'first_name': 'Luis',
             'last_name': 'Valencia'
@@ -160,14 +160,14 @@ class RegistroTest(TestCase):
         # Verifica que no se puede registrar dos usuarios con el mismo username (US-11 Escenario 2)
         self.client.post('/api/register/', {
             'username': 'testuser',
-            'password': TEST_PASS,
+            'password': TEST_PASS,  # NOSONAR
             'email': 'test@test.com',
             'first_name': 'Luis',
             'last_name': 'Valencia'
         }, format='json')
         response = self.client.post('/api/register/', {
             'username': 'testuser',
-            'password': TEST_PASS,
+            'password': TEST_PASS,  # NOSONAR
             'email': 'test2@test.com', 
             'first_name': 'Luis',
             'last_name': 'Valencia'
@@ -190,7 +190,7 @@ class LoginTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(
             username='testuser',
-            password=TEST_PASS, #NOSONAR
+            password=TEST_PASS, # NOSONAR
             email='test@test.com'
         )
 
@@ -198,7 +198,7 @@ class LoginTest(TestCase):
         # Verifica login exitoso y devolucion de token JWT (US-11 Escenario 1)
         response = self.client.post('/api/login/', {
             'username': 'testuser',
-            'password': TEST_PASS
+            'password': TEST_PASS  # NOSONAR
         }, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertIn('access', response.data)
@@ -207,7 +207,7 @@ class LoginTest(TestCase):
         # Verifica que credenciales invalidas son rechazadas (US-11 Escenario 2)
         response = self.client.post('/api/login/', {
             'username': 'testuser',
-            'password': TEST_WRONG
+            'password': TEST_WRONG  # NOSONAR
         }, format='json')
         self.assertEqual(response.status_code, 401)
 
@@ -230,7 +230,7 @@ class StreakTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
             username='streakuser',
-            password=TEST_PASS,
+            password=TEST_PASS,  # NOSONAR
             email='streak@test.com'
         )
 

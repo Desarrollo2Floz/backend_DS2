@@ -14,11 +14,14 @@ jobs:
       DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
 
     steps:
+      # Pineado a SHA de commit (no tag) por seguridad: evita ataques de
+      # cadena de suministro si el tag @v4 fuera reescrito (ver S6570 Sonar)
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      # Pineado a SHA de commit (no tag) por la misma razón que checkout
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
 
@@ -33,6 +36,7 @@ jobs:
           coverage xml -o coverage.xml
           coverage report
 
+      # Ya estaba pineado correctamente a SHA, sin cambios
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@2f77a1ec69fb1d595b06f35ab27e97605bdef703
         env:
