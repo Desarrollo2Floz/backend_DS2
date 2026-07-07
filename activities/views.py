@@ -7,6 +7,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db import transaction
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 from drf_spectacular.types import OpenApiTypes
 from .models import Activity, Subtask
@@ -299,7 +300,7 @@ def today_subtasks(request):
       - status: filtra por estado de la subtarea (pending, done, postponed, overdue)
       - days:   limita "upcoming" a los próximos N días
     """
-    today = date.today()
+    today = timezone.localdate()
     user_id = request.user.id
 
     # Obtenemos los IDs de las actividades del usuario
