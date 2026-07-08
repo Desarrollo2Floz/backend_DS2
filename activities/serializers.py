@@ -1,5 +1,6 @@
 from datetime import date
 from django.db.models import Sum
+from django.utils import timezone
 from rest_framework import serializers
 from users.models import DailyCapacity
 
@@ -51,7 +52,7 @@ class SubtaskSerializer(serializers.ModelSerializer):
 
     def validate_target_date(self, value):
         """La fecha de la subtarea debe ser >= hoy."""
-        if value and value < date.today():
+        if value and value < timezone.localdate():
             raise serializers.ValidationError(
                 'La fecha de la subtarea no puede ser anterior a hoy.'
             )
@@ -235,7 +236,7 @@ class ActivitySerializer(serializers.ModelSerializer):
 
     def validate_due_date(self, value):
         """La fecha límite de la actividad debe ser >= hoy."""
-        if value < date.today():
+        if value < timezone.localdate():
             raise serializers.ValidationError(
                 'La fecha límite no puede ser anterior a hoy.'
             )
