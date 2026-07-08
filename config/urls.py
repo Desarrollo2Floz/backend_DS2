@@ -24,4 +24,5 @@ urlpatterns = [
     path('api/', include('users.urls')),
     path('api/', include('activities.urls')),
 ]
-    
+
+#testing the deployment

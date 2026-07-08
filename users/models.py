@@ -2,6 +2,7 @@
 from django.contrib.auth.models import AbstractUser
 # pyrefly: ignore [missing-import]
 from django.db import models
+from django.utils import timezone
 from datetime import date, timedelta
 import uuid
 
@@ -33,7 +34,7 @@ class User(AbstractUser):
         - Si completó algo AYER: incrementa racha
         - Si streak_last_day es null o pasó más de 1 día: inicia/resetea a 1
         """
-        today = date.today()
+        today = timezone.localdate()
 
         if self.streak_last_day == today:
             # Ya completó algo hoy, no cambiar
